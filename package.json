@@ -1,0 +1,16 @@
+{
+  "name": "seo-aeo-geo-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter web dev",
+    "build": "pnpm -r build",
+    "migrate": "pnpm --filter api migrate",
+    "cli": "pnpm --filter cli start",
+    "mcp:serve": "pnpm --filter mcp start"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "ts-node": "^10.9.2"
+  }
+}

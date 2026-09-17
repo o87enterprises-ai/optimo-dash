@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "analytics"
+version = "0.1.0"
+description = "SEO/AEO/GEO analytics engine"
+authors = ["you <you@example.com>"]
+packages = [{ include = "analytics" }]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+openai = "^1.40"
+anthropic = "^0.34"
+beautifulsoup4 = "^4.12"
+requests = "^2.32"
+# numpy, pandas, scipy, scikit-learn come from Termux's pkg, not Poetry
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.2"
+ruff = "^0.6"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
