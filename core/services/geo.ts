@@ -1,27 +1,26 @@
-import crypto from "crypto";
-import { envKey } from "../env";
-import { pg, redis, publishUpdate } from "../db";
-import { detectCitation } from "./citation";
-import type { LlmModel, ProbeResult } from "../../../../shared/types";
+import type { Ctx } from "../ports.ts";
+import { now, toBool } from "../ports.ts";
+import { detectCitation } from "../citation.ts";
+import { getSecret } from "../secrets.ts";
+import type { LlmModel, ProbeResult } from "../types";
 
 /**
  * LLM visibility probe (GEO).
  *
  * Asks each enabled model a real user question and records whether the answer
- * cites the site's domain. Results land in geo_prompts, one row per
- * (site, prompt, model).
+ * cites the site's domain. Keys come from the encrypted credential store,
+ * falling back to the environment, so a model is enabled the moment its key is
+ * saved in the settings form — no redeploy.
  *
- * Cost control: responses are cached in Redis for 24h keyed by
- * sha256(prompt + model), requests are serialised per provider at ~1 req/sec,
- * and 429s back off exponentially. A model with no API key is skipped, never
- * faked — visibility numbers must reflect real answers.
+ * Cost control: answers are cached for 24h keyed by sha256(prompt + model),
+ * requests are serialised per provider at ~1/sec, and 429s back off. A model
+ * without a key is skipped, never faked.
  */
 
 const CACHE_TTL_SECONDS = 60 * 60 * 24;
 const MIN_REQUEST_GAP_MS = 1000;
 const MAX_ATTEMPTS = 4;
 
-/** Which env var gates each model, and how to call it. */
 const PROVIDERS: Record<
   LlmModel,
   { envVar: string; call: (prompt: string, key: string) => Promise<string> }
@@ -34,18 +33,27 @@ const PROVIDERS: Record<
 
 export const ALL_MODELS = Object.keys(PROVIDERS) as LlmModel[];
 
-/** Models whose API key is present. Everything else is greyed out in the UI. */
-export function enabledModels(): LlmModel[] {
-  return ALL_MODELS.filter((m) => envKey(PROVIDERS[m].envVar) !== undefined);
+/** Models whose key is configured, from either source. */
+export async function enabledModels(ctx: Ctx): Promise<LlmModel[]> {
+  const enabled: LlmModel[] = [];
+  for (const model of ALL_MODELS) {
+    if (await getSecret(ctx, PROVIDERS[model].envVar)) enabled.push(model);
+  }
+  return enabled;
 }
 
-/** Per-model status for the UI's "add key to enable" affordance. */
-export function modelStatus() {
-  return ALL_MODELS.map((m) => ({
-    name: m,
-    enabled: envKey(PROVIDERS[m].envVar) !== undefined,
-    reason: envKey(PROVIDERS[m].envVar) ? undefined : `${PROVIDERS[m].envVar} not set`,
-  }));
+/** Per-model status for the UI's greyed-out cards. */
+export async function modelStatus(ctx: Ctx) {
+  return Promise.all(
+    ALL_MODELS.map(async (name) => {
+      const key = await getSecret(ctx, PROVIDERS[name].envVar);
+      return {
+        name,
+        enabled: Boolean(key),
+        reason: key ? undefined : `${PROVIDERS[name].envVar} not set`,
+      };
+    })
+  );
 }
 
 /* ---------- Provider adapters ---------- */
@@ -78,16 +86,9 @@ async function callAnthropic(prompt: string, key: string): Promise<string> {
   const json = await postJson(
     "https://api.anthropic.com/v1/messages",
     { "x-api-key": key, "anthropic-version": "2023-06-01" },
-    {
-      model: "claude-3-5-sonnet-latest",
-      max_tokens: 800,
-      messages: [{ role: "user", content: prompt }],
-    }
+    { model: "claude-3-5-sonnet-latest", max_tokens: 800, messages: [{ role: "user", content: prompt }] }
   );
-  return (json.content ?? [])
-    .filter((b: any) => b.type === "text")
-    .map((b: any) => b.text)
-    .join("\n");
+  return (json.content ?? []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
 }
 
 async function callGemini(prompt: string, key: string): Promise<string> {
@@ -96,9 +97,7 @@ async function callGemini(prompt: string, key: string): Promise<string> {
     {},
     { contents: [{ parts: [{ text: prompt }] }] }
   );
-  return (json.candidates?.[0]?.content?.parts ?? [])
-    .map((p: any) => p.text ?? "")
-    .join("\n");
+  return (json.candidates?.[0]?.content?.parts ?? []).map((p: any) => p.text ?? "").join("\n");
 }
 
 async function callPerplexity(prompt: string, key: string): Promise<string> {
@@ -108,22 +107,18 @@ async function callPerplexity(prompt: string, key: string): Promise<string> {
     { model: "sonar", messages: [{ role: "user", content: prompt }], max_tokens: 800 }
   );
   const text = json.choices?.[0]?.message?.content ?? "";
-  // Perplexity returns its sources separately; they are exactly what a GEO
-  // citation check cares about, so fold them into the searched text.
+  // Perplexity returns sources separately; they are exactly what a citation
+  // check cares about, so fold them into the searched text.
   const citations: string[] = json.citations ?? json.search_results?.map((s: any) => s.url) ?? [];
   return citations.length ? `${text}\n\nSources:\n${citations.join("\n")}` : text;
 }
 
 /* ---------- Rate limiting ---------- */
 
-/** Last request time per provider, so calls stay serial at ~1/sec. */
 const lastCallAt = new Map<LlmModel, number>();
-/** In-flight chain per provider, so concurrent probes queue instead of racing. */
 const queues = new Map<LlmModel, Promise<unknown>>();
 
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Runs fn after the provider's queue drains and its 1 req/sec gap has passed. */
 function enqueue<T>(model: LlmModel, fn: () => Promise<T>): Promise<T> {
@@ -136,12 +131,10 @@ function enqueue<T>(model: LlmModel, fn: () => Promise<T>): Promise<T> {
       lastCallAt.set(model, Date.now());
     }
   });
-  // Keep the chain alive even when this call rejects.
   queues.set(model, run.catch(() => undefined));
   return run;
 }
 
-/** Calls a provider, retrying 429s and 5xx with exponential backoff. */
 async function callWithBackoff(model: LlmModel, prompt: string, key: string): Promise<string> {
   let lastErr: any;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
@@ -159,45 +152,53 @@ async function callWithBackoff(model: LlmModel, prompt: string, key: string): Pr
 
 /* ---------- Probe ---------- */
 
-function cacheKey(prompt: string, model: string) {
-  return `geo:probe:${crypto.createHash("sha256").update(`${prompt}::${model}`).digest("hex")}`;
+async function cacheKey(prompt: string, model: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${prompt}::${model}`));
+  const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `geo:probe:${hex}`;
 }
 
-export async function probeLLM(opts: {
-  siteId: number;
-  prompt: string;
-  models?: LlmModel[];
-}): Promise<ProbeResult[]> {
-  const { rows } = await pg.query("SELECT domain FROM sites WHERE id = $1", [opts.siteId]);
-  if (!rows.length) throw new Error(`site ${opts.siteId} not found`);
-  const domain: string = rows[0].domain;
+export async function probeLLM(
+  ctx: Ctx,
+  opts: { siteId: number; prompt: string; models?: LlmModel[] }
+): Promise<ProbeResult[]> {
+  const site = await ctx.db.first<{ domain: string }>("SELECT domain FROM sites WHERE id = ?", [
+    opts.siteId,
+  ]);
+  if (!site) throw new Error(`site ${opts.siteId} not found`);
 
   const requested = opts.models?.length ? opts.models : ALL_MODELS;
   const unknown = requested.filter((m) => !PROVIDERS[m]);
   if (unknown.length) throw new Error(`unknown model(s): ${unknown.join(", ")}`);
 
-  const models = requested.filter((m) => envKey(PROVIDERS[m].envVar) !== undefined);
-  if (!models.length) {
+  const keys = new Map<LlmModel, string>();
+  for (const model of requested) {
+    const key = await getSecret(ctx, PROVIDERS[model].envVar);
+    if (key) keys.set(model, key);
+  }
+  if (!keys.size) {
     throw new Error(
-      `no models enabled — set one of ${requested.map((m) => PROVIDERS[m].envVar).join(", ")} in .env`
+      `no models enabled — add a key in Settings, or set one of ${requested
+        .map((m) => PROVIDERS[m].envVar)
+        .join(", ")}`
     );
   }
 
   const results: ProbeResult[] = [];
 
-  for (const model of models) {
-    let answer: string | null = null;
+  for (const [model, key] of keys) {
+    let answer: string;
     let cached = false;
 
     try {
-      const key = cacheKey(opts.prompt, model);
-      const hit = await redis.get(key).catch(() => null);
+      const cacheId = await cacheKey(opts.prompt, model);
+      const hit = await ctx.cache.get(cacheId);
       if (hit !== null) {
         answer = hit;
         cached = true;
       } else {
-        answer = await callWithBackoff(model, opts.prompt, envKey(PROVIDERS[model].envVar)!);
-        await redis.set(key, answer, "EX", CACHE_TTL_SECONDS).catch(() => undefined);
+        answer = await callWithBackoff(model, opts.prompt, key);
+        await ctx.cache.set(cacheId, answer, CACHE_TTL_SECONDS);
       }
     } catch (e: any) {
       // One dead provider must not sink the whole run.
@@ -205,22 +206,46 @@ export async function probeLLM(opts: {
       continue;
     }
 
-    const { cited, excerpt } = detectCitation(answer ?? "", domain);
+    const { cited, excerpt } = detectCitation(answer, site.domain);
 
-    await pg.query(
+    await ctx.db.run(
       `INSERT INTO geo_prompts (site_id, prompt, model, cited, excerpt, updated_at)
-       VALUES ($1, $2, $3, $4, $5, NOW())
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT (site_id, prompt, model)
-       DO UPDATE SET cited = EXCLUDED.cited,
-                     excerpt = EXCLUDED.excerpt,
-                     updated_at = NOW()`,
-      [opts.siteId, opts.prompt, model, cited, excerpt]
+       DO UPDATE SET cited = excluded.cited, excerpt = excluded.excerpt, updated_at = excluded.updated_at`,
+      [opts.siteId, opts.prompt, model, cited ? 1 : 0, excerpt, now()]
     );
 
     results.push({ model, cited, excerpt, cached });
   }
 
-  await publishUpdate({ kind: "geo_prompts", siteId: opts.siteId, payload: { prompt: opts.prompt, results } });
-
+  await ctx.bus.publish({ kind: "geo_prompts", siteId: opts.siteId, payload: { prompt: opts.prompt, results } });
   return results;
+}
+
+/** Prompts and visibility for a site, with a per-model breakdown. */
+export async function getGeo(ctx: Ctx, siteId: number) {
+  const rows = await ctx.db.all<any>(
+    "SELECT * FROM geo_prompts WHERE site_id = ? ORDER BY updated_at DESC LIMIT 200",
+    [siteId]
+  );
+  const prompts = rows.map((r) => ({ ...r, cited: toBool(r.cited) }));
+  const cited = prompts.filter((p) => p.cited).length;
+
+  const byModel: Record<string, { total: number; cited: number; visibility: number }> = {};
+  for (const p of prompts) {
+    byModel[p.model] ??= { total: 0, cited: 0, visibility: 0 };
+    byModel[p.model].total++;
+    if (p.cited) byModel[p.model].cited++;
+  }
+  for (const m of Object.values(byModel)) {
+    m.visibility = m.total ? Math.round((m.cited / m.total) * 100) : 0;
+  }
+
+  return {
+    prompts,
+    visibility: prompts.length ? Math.round((cited / prompts.length) * 100) : 0,
+    byModel,
+    models: await modelStatus(ctx),
+  };
 }

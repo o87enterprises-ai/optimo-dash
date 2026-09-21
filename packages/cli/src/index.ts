@@ -2,7 +2,9 @@
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawn } from "node:child_process";
+import { createInterface } from "node:readline/promises";
 import { Command } from "commander";
+import { clearSession, loadSession, saveSession } from "./session.ts";
 
 /**
  * seo-geo — command line for the SEO / AEO / GEO dashboard.
@@ -16,11 +18,17 @@ const API = process.env.API_URL || "http://localhost:4000";
 
 /** Calls the API, turning a non-2xx into a readable CLI error. */
 async function api(path: string, init?: RequestInit): Promise<any> {
+  // Mutating endpoints need the stored session plus its CSRF token.
+  const session = loadSession(API);
+  const auth: Record<string, string> = session
+    ? { Cookie: session.cookie, "x-csrf-token": session.csrfToken }
+    : {};
+
   let res: Response;
   try {
     res = await fetch(`${API}${path}`, {
       ...init,
-      headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+      headers: { "Content-Type": "application/json", ...auth, ...(init?.headers ?? {}) },
     });
   } catch (e: any) {
     throw new Error(`cannot reach API at ${API} — is it running? (pnpm --filter api dev)\n  ${e.message}`);
@@ -33,15 +41,27 @@ async function api(path: string, init?: RequestInit): Promise<any> {
   } catch {
     body = text;
   }
+  if (res.status === 401) {
+    throw new Error("not signed in — run: seo-geo login");
+  }
   if (!res.ok) throw new Error(body?.error ?? `${res.status} ${res.statusText}`);
   return body;
 }
 
 /** Fetches a text/markdown response from the API. */
 async function apiText(path: string, init?: RequestInit): Promise<string> {
+  const session = loadSession(API);
+  const auth: Record<string, string> = session
+    ? { Cookie: session.cookie, "x-csrf-token": session.csrfToken }
+    : {};
   const res = await fetch(`${API}${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", Accept: "text/markdown", ...(init?.headers ?? {}) },
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "text/markdown",
+      ...auth,
+      ...(init?.headers ?? {}),
+    },
   });
   if (!res.ok) throw new Error((await res.text()) || `${res.status} ${res.statusText}`);
   return res.text();
@@ -104,11 +124,13 @@ program
   .description("check API, database and cache")
   .option("--json")
   .action(async (o) => {
-    const d = await api("/health");
-    output(opts(o), d, (h) => {
-      console.log(`  API    ${h.ok ? "ok" : "down"}`);
-      console.log(`  DB     ${h.db ? "ok" : "down"}`);
-      console.log(`  Redis  ${h.redis ? "ok" : "down"}`);
+    const d = await api("/api/health");
+    const session = loadSession(API);
+    output(opts(o), { ...d, signedIn: Boolean(session) }, (h) => {
+      console.log(`  API         ${h.ok ? "ok" : "down"}`);
+      console.log(`  Database    ${h.db ? `ok (${h.dialect})` : "down"}`);
+      console.log(`  Encryption  ${h.encryptionConfigured ? "configured" : "ENCRYPTION_KEY not set"}`);
+      console.log(`  Session     ${session ? "signed in" : "signed out (run: seo-geo login)"}`);
     });
   });
 
@@ -135,6 +157,66 @@ program
         ["group", "connector", "status", "reason"]
       );
     });
+  });
+
+/* ---------- auth ---------- */
+
+/** Reads a secret without echoing it to the terminal. */
+async function promptHidden(question: string): Promise<string> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+  // Suppress echo so the password is not left in the scrollback.
+  const output = rl as unknown as { output?: NodeJS.WriteStream };
+  const original = output.output?.write.bind(output.output);
+  let muted = false;
+  if (original && output.output) {
+    output.output.write = ((chunk: string, ...rest: unknown[]) =>
+      muted ? true : original(chunk, ...(rest as []))) as typeof output.output.write;
+  }
+  const answer = rl.question(question);
+  muted = true;
+  const value = await answer;
+  muted = false;
+  if (original && output.output) output.output.write = original;
+  rl.close();
+  process.stdout.write("\n");
+  return value;
+}
+
+program
+  .command("login")
+  .description("sign in and store a session for this API")
+  .option("--username <name>")
+  .option("--password <value>", "avoid on a shared machine; omit to be prompted")
+  .action(async (o) => {
+    const username = o.username ?? process.env.SEO_GEO_USERNAME;
+    if (!username) throw new Error("--username is required");
+    const password =
+      o.password ?? process.env.SEO_GEO_PASSWORD ?? (await promptHidden("Password: "));
+
+    const res = await fetch(`${API}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    const body: any = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error ?? `${res.status} ${res.statusText}`);
+
+    const setCookie = res.headers.get("set-cookie") ?? "";
+    const cookie = setCookie.split(";")[0];
+    if (!cookie) throw new Error("server did not return a session cookie");
+
+    const path = saveSession({ api: API, cookie, csrfToken: body.csrfToken, expiresAt: body.expiresAt });
+    console.log(`  signed in as ${username}`);
+    console.log(`  session stored at ${path} (mode 0600)`);
+  });
+
+program
+  .command("logout")
+  .description("discard the stored session")
+  .action(async () => {
+    await api("/api/auth/logout", { method: "POST" }).catch(() => undefined);
+    clearSession();
+    console.log("  signed out");
   });
 
 /* ---------- sites ---------- */

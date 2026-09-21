@@ -16,13 +16,42 @@ import {
  * lives. Runs over stdio: `pnpm mcp:serve`.
  */
 
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
+
 const API = process.env.API_URL || "http://localhost:4000";
+
+/**
+ * Mutating tools (run_geo_prompt, clone_strategy) require an authenticated
+ * session. The session is created by `seo-geo login` and read from the same
+ * file, so an agent inherits whatever access the operator already granted
+ * rather than holding credentials of its own.
+ */
+function storedSession(): { cookie: string; csrfToken: string } | null {
+  const base = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+  const path = join(base, "seo-geo", "session.json");
+  if (!existsSync(path)) return null;
+  try {
+    const session = JSON.parse(readFileSync(path, "utf8"));
+    if (session.api !== API) return null;
+    if (session.expiresAt && session.expiresAt <= new Date().toISOString()) return null;
+    return { cookie: session.cookie, csrfToken: session.csrfToken };
+  } catch {
+    return null;
+  }
+}
 
 /** Calls the dashboard API and surfaces its error text rather than a bare status. */
 async function api(path: string, init?: RequestInit): Promise<unknown> {
+  const session = storedSession();
+  const auth: Record<string, string> = session
+    ? { Cookie: session.cookie, "x-csrf-token": session.csrfToken }
+    : {};
+
   const res = await fetch(`${API}${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    headers: { "Content-Type": "application/json", ...auth, ...(init?.headers ?? {}) },
   });
   const text = await res.text();
   let body: any;
@@ -30,6 +59,9 @@ async function api(path: string, init?: RequestInit): Promise<unknown> {
     body = text ? JSON.parse(text) : null;
   } catch {
     body = text;
+  }
+  if (res.status === 401) {
+    throw new Error("not signed in — the operator must run `seo-geo login` first");
   }
   if (!res.ok) {
     throw new Error(body?.error ?? `${res.status} ${res.statusText}`);
@@ -208,7 +240,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       content: [
         {
           type: "text" as const,
-          text: `${tool.name} failed: ${e.message}\n\nIs the API running at ${API}? Start it with: pnpm --filter api dev`,
+          text: `${tool.name} failed: ${e.message}\n\nAPI: ${API}`,
         },
       ],
     };

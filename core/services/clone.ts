@@ -1,17 +1,21 @@
-import { pg } from "./db";
-import { fetchReferringHosts } from "./connectors/backlinks";
-import type { CloneReport, CloneAction, CloneGaps } from "../../../shared/types";
+import type { Ctx } from "../ports.ts";
+import { now } from "../ports.ts";
+import { fetchReferringHosts } from "../connectors/backlinks.ts";
+import type { CloneAction, CloneGaps, CloneReport } from "../types";
 
 /**
  * Clone engine — reverse-engineers a competitor's public strategy.
  *
- * Uses only public, free data: the target's own sitemap and pages, plus
- * whatever the site's backlink table already holds. It does not touch
- * logged-in or ToS-restricted sources, and every number it reports is an
- * estimate, flagged as such in the output.
+ * Uses only public, free data: the target's own sitemap and pages, plus the
+ * site's stored backlinks. It never touches logged-in or ToS-restricted
+ * sources, and every number it reports is an estimate, flagged as such.
+ *
+ * Page budget: each page costs one subrequest and a slice of CPU. Workers caps
+ * both (50 subrequests / 10ms CPU on the free plan), so the caller passes a
+ * budget and the crawl is clamped to it rather than failing mid-run.
  */
 
-const MAX_PAGES = 25;
+const DEFAULT_MAX_PAGES = 25;
 const FETCH_TIMEOUT_MS = 10000;
 const STOPWORDS = new Set([
   "the","and","for","with","that","this","from","your","you","are","our","how",
@@ -57,7 +61,7 @@ async function fetchText(url: string): Promise<string | null> {
 }
 
 /** Reads sitemap.xml, following one level of sitemap index nesting. */
-async function discoverUrls(domain: string): Promise<string[]> {
+async function discoverUrls(domain: string, maxPages: number): Promise<string[]> {
   const roots = [`https://${domain}/sitemap.xml`, `https://${domain}/sitemap_index.xml`];
   const found: string[] = [];
 
@@ -84,7 +88,7 @@ async function discoverUrls(domain: string): Promise<string[]> {
 
   // No sitemap is common; fall back to the homepage so the report is still useful.
   if (!found.length) found.push(`https://${domain}/`);
-  return [...new Set(found)].slice(0, MAX_PAGES);
+  return [...new Set(found)].slice(0, maxPages);
 }
 
 function stripTags(html: string): string {
@@ -219,36 +223,47 @@ export function extractTopics(facts: PageFacts[], limit = 25, excludeDomain?: st
 
 /* ---------- Report ---------- */
 
-export async function runClone(opts: {
-  targetDomain: string;
-  siteId: number;
-}): Promise<CloneReport> {
+
+/* ---------- Report ---------- */
+
+export async function runClone(
+  ctx: Ctx,
+  opts: { targetDomain: string; siteId: number; maxPages?: number }
+): Promise<CloneReport> {
   const target = opts.targetDomain
     .trim()
     .toLowerCase()
     .replace(/^https?:\/\//, "")
     .replace(/\/.*$/, "");
-  if (!target || !target.includes(".")) throw new Error("targetDomain must be a domain like competitor.com");
+  if (!target || !target.includes(".")) {
+    throw new Error("targetDomain must be a domain like competitor.com");
+  }
 
-  const site = await pg.query("SELECT domain FROM sites WHERE id = $1", [opts.siteId]);
-  if (!site.rows.length) throw new Error(`site ${opts.siteId} not found`);
-  const ownDomain: string = site.rows[0].domain;
+  const site = await ctx.db.first<{ domain: string }>("SELECT domain FROM sites WHERE id = ?", [
+    opts.siteId,
+  ]);
+  if (!site) throw new Error(`site ${opts.siteId} not found`);
+  const ownDomain = site.domain;
+
+  // Split the budget between the target and our own site, keeping the larger
+  // share for the target since that is what the report is about.
+  const budget = Math.max(4, Math.min(opts.maxPages ?? DEFAULT_MAX_PAGES, 50));
+  const targetBudget = Math.max(2, Math.round(budget * 0.65));
+  const ownBudget = Math.max(2, budget - targetBudget);
 
   /* 1. Crawl the target. */
-  const urls = await discoverUrls(target);
+  const urls = await discoverUrls(target, targetBudget);
   const facts: PageFacts[] = [];
   for (const url of urls) {
     const html = await fetchText(url);
     if (html) facts.push(extractFacts(url, html));
   }
-  if (!facts.length) {
-    throw new Error(`could not fetch any public pages from ${target}`);
-  }
+  if (!facts.length) throw new Error(`could not fetch any public pages from ${target}`);
 
   /* 2. Crawl our own site for the same surface, so the diff is like-for-like. */
-  const ownUrls = await discoverUrls(ownDomain);
+  const ownUrls = await discoverUrls(ownDomain, ownBudget);
   const ownFacts: PageFacts[] = [];
-  for (const url of ownUrls.slice(0, 15)) {
+  for (const url of ownUrls) {
     const html = await fetchText(url);
     if (html) ownFacts.push(extractFacts(url, html));
   }
@@ -259,12 +274,12 @@ export async function runClone(opts: {
   const targetSchema = new Set(facts.flatMap((f) => f.schemaTypes));
   const ownSchema = new Set(ownFacts.flatMap((f) => f.schemaTypes));
 
-  const ownBacklinks = await pg.query(
-    "SELECT DISTINCT source FROM backlinks WHERE site_id = $1 AND lost = FALSE",
+  const ownBacklinks = await ctx.db.all<{ source: string }>(
+    "SELECT DISTINCT source FROM backlinks WHERE site_id = ? AND lost = 0",
     [opts.siteId]
   );
   const ownLinkHosts = new Set(
-    ownBacklinks.rows.map((r) => {
+    ownBacklinks.map((r) => {
       try {
         return new URL(r.source.startsWith("http") ? r.source : `https://${r.source}`).hostname.replace(/^www\./, "");
       } catch {
@@ -273,23 +288,19 @@ export async function runClone(opts: {
     })
   );
 
-  // Prompts where the target is named in an LLM answer but we are not.
-  const uncited = await pg.query(
-    `SELECT DISTINCT prompt FROM geo_prompts
-     WHERE site_id = $1 AND cited = FALSE
-     ORDER BY prompt LIMIT 20`,
+  // Free Common Crawl data, so an outage must not sink the rest of the report.
+  const targetLinkHosts = await fetchReferringHosts(target).catch(() => [] as string[]);
+
+  const uncited = await ctx.db.all<{ prompt: string }>(
+    "SELECT DISTINCT prompt FROM geo_prompts WHERE site_id = ? AND cited = 0 ORDER BY prompt LIMIT 20",
     [opts.siteId]
   );
-
-  // Referring hosts the target has and we do not — free Common Crawl data, so
-  // an outage here must not sink the rest of the report.
-  const targetLinkHosts = await fetchReferringHosts(target).catch(() => [] as string[]);
 
   const gaps: CloneGaps = {
     topics: targetTopics.filter((t) => !ownTopics.has(t)).slice(0, 15),
     schema: [...targetSchema].filter((s) => !ownSchema.has(s)),
     backlinks: targetLinkHosts.filter((h) => !ownLinkHosts.has(h)).slice(0, 20),
-    llmPrompts: uncited.rows.map((r) => r.prompt),
+    llmPrompts: uncited.map((r) => r.prompt),
   };
 
   /* 4. Actions, highest-leverage first. */
@@ -340,10 +351,26 @@ export async function runClone(opts: {
     recommendedActions: actions.sort((a, b) => a.priority - b.priority),
   };
 
-  await pg.query(
-    "INSERT INTO clone_reports (site_id, target_domain, report) VALUES ($1, $2, $3)",
-    [opts.siteId, target, JSON.stringify(report)]
+  await ctx.db.run(
+    "INSERT INTO clone_reports (site_id, target_domain, report, created_at) VALUES (?, ?, ?, ?)",
+    [opts.siteId, target, JSON.stringify(report), now()]
   );
 
   return report;
+}
+
+/** Stored clone reports, newest first. */
+export async function listCloneReports(ctx: Ctx, siteId: number) {
+  const rows = await ctx.db.all<{ id: number; target_domain: string; report: string; created_at: string }>(
+    "SELECT id, target_domain, report, created_at FROM clone_reports WHERE site_id = ? ORDER BY created_at DESC LIMIT 20",
+    [siteId]
+  );
+  // Stored as TEXT in both dialects, so parse here rather than relying on a
+  // driver to hydrate JSONB.
+  return {
+    reports: rows.map((r) => ({
+      ...r,
+      report: typeof r.report === "string" ? JSON.parse(r.report) : r.report,
+    })),
+  };
 }

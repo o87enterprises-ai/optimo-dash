@@ -1,5 +1,5 @@
-import { pg } from "./db";
-import type { Debrief, DebriefPrompt, DebriefScope } from "../../../shared/types";
+import type { Ctx } from "../ports.ts";
+import type { Debrief, DebriefPrompt, DebriefScope } from "../types";
 
 /**
  * Debrief generator.
@@ -25,63 +25,68 @@ type SiteFindings = {
   latestClone: any | null;
 };
 
-async function gather(siteId: number, country?: string): Promise<SiteFindings> {
-  const site = await pg.query("SELECT domain FROM sites WHERE id = $1", [siteId]);
-  if (!site.rows.length) throw new Error(`site ${siteId} not found`);
+async function gather(ctx: Ctx, siteId: number, country?: string): Promise<SiteFindings> {
+  const site = await ctx.db.first<{ domain: string }>("SELECT domain FROM sites WHERE id = ?", [siteId]);
+  if (!site) throw new Error(`site ${siteId} not found`);
 
-  const keywords = await pg.query(
+  const keywords = await ctx.db.all<any>(
     `SELECT keyword, position, clicks, impressions FROM keywords
-     WHERE site_id = $1 ORDER BY impressions DESC NULLS LAST LIMIT 40`,
+     WHERE site_id = ? ORDER BY impressions DESC LIMIT 40`,
     [siteId]
   );
 
-  // High impressions but a poor position is the clearest content opportunity.
-  const weak = await pg.query(
+  // High impressions with a poor position is the clearest content opportunity.
+  const weakKeywords = await ctx.db.all<any>(
     `SELECT keyword, position, impressions FROM keywords
-     WHERE site_id = $1 AND (position IS NULL OR position > 10)
-     ORDER BY impressions DESC NULLS LAST LIMIT 20`,
+     WHERE site_id = ? AND (position IS NULL OR position > 10)
+     ORDER BY impressions DESC LIMIT 20`,
     [siteId]
   );
 
-  const uncited = await pg.query(
+  const uncitedPrompts = await ctx.db.all<any>(
     `SELECT prompt, model, excerpt FROM geo_prompts
-     WHERE site_id = $1 AND cited = FALSE ORDER BY updated_at DESC LIMIT 20`,
+     WHERE site_id = ? AND cited = 0 ORDER BY updated_at DESC LIMIT 20`,
     [siteId]
   );
-  const cited = await pg.query(
+  const citedPrompts = await ctx.db.all<any>(
     `SELECT prompt, model FROM geo_prompts
-     WHERE site_id = $1 AND cited = TRUE ORDER BY updated_at DESC LIMIT 20`,
+     WHERE site_id = ? AND cited = 1 ORDER BY updated_at DESC LIMIT 20`,
     [siteId]
   );
 
-  const total = await pg.query(
-    `SELECT COUNT(*)::int AS n, COUNT(*) FILTER (WHERE cited)::int AS c
-     FROM geo_prompts WHERE site_id = $1`,
+  const totals = await ctx.db.first<{ n: number; c: number }>(
+    `SELECT COUNT(*) AS n, SUM(cited) AS c FROM geo_prompts WHERE site_id = ?`,
     [siteId]
   );
-  const { n, c } = total.rows[0] ?? { n: 0, c: 0 };
+  const n = Number(totals?.n ?? 0);
+  const c = Number(totals?.c ?? 0);
 
-  const regional = await pg.query(
+  const topCountries = await ctx.db.all<any>(
     `SELECT country, value FROM regional_metrics
-     WHERE site_id = $1 AND metric = 'clicks' ${country ? "AND country = $2" : ""}
-     ORDER BY value DESC NULLS LAST LIMIT 10`,
+     WHERE site_id = ? AND metric = 'clicks'${country ? " AND country = ?" : ""}
+     ORDER BY value DESC LIMIT 10`,
     country ? [siteId, country.toUpperCase()] : [siteId]
   );
 
-  const clone = await pg.query(
-    "SELECT report FROM clone_reports WHERE site_id = $1 ORDER BY created_at DESC LIMIT 1",
+  const clone = await ctx.db.first<{ report: string }>(
+    "SELECT report FROM clone_reports WHERE site_id = ? ORDER BY created_at DESC LIMIT 1",
     [siteId]
   );
+  const latestClone = clone
+    ? typeof clone.report === "string"
+      ? JSON.parse(clone.report)
+      : clone.report
+    : null;
 
   return {
-    domain: site.rows[0].domain,
-    keywords: keywords.rows,
-    weakKeywords: weak.rows,
-    uncitedPrompts: uncited.rows,
-    citedPrompts: cited.rows,
+    domain: site.domain,
+    keywords,
+    weakKeywords,
+    uncitedPrompts,
+    citedPrompts,
     visibility: n ? Math.round((c / n) * 100) : 0,
-    topCountries: regional.rows,
-    latestClone: clone.rows[0]?.report ?? null,
+    topCountries,
+    latestClone,
   };
 }
 
@@ -296,7 +301,7 @@ SUCCESS CRITERIA
 
 /* ---------- Entry point ---------- */
 
-export async function generateDebrief(opts: {
+export async function generateDebrief(ctx: Ctx, opts: {
   siteId: number;
   scope?: DebriefScope;
   targetAudience?: string;
@@ -308,7 +313,7 @@ export async function generateDebrief(opts: {
     throw new Error(`scope must be one of ${SCOPES.join(", ")}`);
   }
 
-  const f = await gather(opts.siteId, opts.country);
+  const f = await gather(ctx, opts.siteId, opts.country);
   const audience = opts.targetAudience?.trim() || "the site's existing audience";
   const tone = opts.tone?.trim() || "clear, factual";
 

@@ -7,10 +7,17 @@
     "build": "pnpm -r build",
     "migrate": "pnpm --filter api migrate",
     "cli": "pnpm --filter cli start",
-    "mcp:serve": "pnpm --filter mcp start"
+    "mcp:serve": "pnpm --filter mcp start",
+    "pages:build": "pnpm --filter web build:pages",
+    "pages:dev": "pnpm pages:build && wrangler pages dev",
+    "pages:deploy": "pnpm pages:build && wrangler pages deploy",
+    "typecheck": "tsc -p tsconfig.workers.json && tsc -p apps/api/tsconfig.json"
   },
   "devDependencies": {
+    "hono": "^4.13.8",
+    "playwright": "^1.63.0",
+    "ts-node": "^10.9.2",
     "typescript": "^5.6.0",
-    "ts-node": "^10.9.2"
+    "wrangler": "^4.136.1"
   }
 }

@@ -1,91 +1,119 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { ApiError, api, loadSession } from "../lib/api";
+import type { SessionState } from "../lib/api";
 
-type Health = { ok: boolean; db: boolean; redis: boolean };
+type Health = { ok: boolean; db: boolean; dialect: string; encryptionConfigured: boolean };
 type Site = { id: number; domain: string; name: string; created_at: string };
-type Rank = { keywords: any[]; updated: string };
-type Geo = { prompts: any[]; visibility: number };
-type Backlinks = { backlinks: any[] };
+type Summary = {
+  seo: { n: number; clicks: number; impressions: number; avg_position: number | null };
+  geo: { n: number; cited: number; visibility: number };
+  backlinks: { live: number; lost: number };
+  reviews: { n: number; sentiment: number | null; rating: number | null };
+  citations: { n: number; authority: number | null };
+  updated: string;
+};
 
 export default function Home() {
   const [health, setHealth] = useState<Health | null>(null);
+  const [session, setSession] = useState<SessionState | null>(null);
   const [sites, setSites] = useState<Site[]>([]);
   const [activeSite, setActiveSite] = useState<Site | null>(null);
-  const [rank, setRank] = useState<Rank | null>(null);
-  const [geo, setGeo] = useState<Geo | null>(null);
-  const [links, setLinks] = useState<Backlinks | null>(null);
+  const [summary, setSummary] = useState<Summary | null>(null);
   const [domainInput, setDomainInput] = useState("");
-  const [adding, setAdding] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState("—");
 
-  async function loadHealth() {
+  const loadHealth = useCallback(async () => {
     try {
-      setHealth(await fetch("/health").then((r) => r.json()));
+      setHealth(await api<Health>("/api/health"));
     } catch {
-      setHealth({ ok: false, db: false, redis: false });
+      setHealth({ ok: false, db: false, dialect: "?", encryptionConfigured: false });
     }
-  }
+  }, []);
 
-  async function loadSites() {
-    const data = await fetch("/api/sites").then((r) => r.json());
-    setSites(data);
-    if (!activeSite && data.length) setActiveSite(data[0]);
-  }
+  const loadSites = useCallback(async () => {
+    try {
+      const data = await api<Site[]>("/api/sites");
+      setSites(data);
+      setActiveSite((current) => current ?? data[0] ?? null);
+    } catch (e) {
+      // Reads are authenticated unless the deployment opts into public reads.
+      if (e instanceof ApiError && e.status === 401) {
+        setSites([]);
+        setActiveSite(null);
+        return;
+      }
+      throw e;
+    }
+  }, []);
 
-  async function loadSiteData(site: Site) {
-    const [r, g, b] = await Promise.all([
-      fetch(`/api/sites/${site.id}/rank`).then((x) => x.json()),
-      fetch(`/api/sites/${site.id}/geo`).then((x) => x.json()),
-      fetch(`/api/sites/${site.id}/backlinks`).then((x) => x.json()),
-    ]);
-    setRank(r);
-    setGeo(g);
-    setLinks(b);
+  const loadSummary = useCallback(async (site: Site) => {
+    setSummary(await api<Summary>(`/api/sites/${site.id}/summary`));
     setLastUpdate(new Date().toLocaleTimeString());
-  }
+  }, []);
+
+  useEffect(() => {
+    void loadHealth();
+    void loadSession()
+      .then(async (state) => {
+        setSession(state);
+        // Skip the request entirely when it is known to be unauthorised;
+        // firing it anyway would only log a 401 in the console.
+        if (state.authenticated || state.publicReads) {
+          await loadSites().catch((e) => setError((e as Error).message));
+        }
+      })
+      .catch(() => undefined);
+    const id = setInterval(loadHealth, 10000);
+    return () => clearInterval(id);
+  }, [loadHealth, loadSites]);
+
+  useEffect(() => {
+    if (!activeSite) return;
+    void loadSummary(activeSite).catch(() => undefined);
+    const id = setInterval(() => void loadSummary(activeSite).catch(() => undefined), 15000);
+    return () => clearInterval(id);
+  }, [activeSite, loadSummary]);
+
+  const signedIn = session?.authenticated ?? false;
 
   async function addSite(e: React.FormEvent) {
     e.preventDefault();
     if (!domainInput.trim()) return;
-    setAdding(true);
-    const res = await fetch("/api/sites", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ domain: domainInput }),
-    });
-    setAdding(false);
-    if (res.ok) {
-      const site = await res.json();
+    setBusy(true);
+    setError(null);
+    try {
+      const site = await api<Site>("/api/sites", {
+        method: "POST",
+        body: JSON.stringify({ domain: domainInput }),
+      });
       setDomainInput("");
       setActiveSite(site);
       await loadSites();
-    } else {
-      const err = await res.json();
-      alert(err.error || "Failed to add site");
+    } catch (e) {
+      setError(
+        e instanceof ApiError && e.status === 401
+          ? "Sign in on the Settings page to add a site."
+          : (e as Error).message
+      );
+    } finally {
+      setBusy(false);
     }
   }
 
   async function removeSite(id: number) {
     if (!confirm("Remove this site and all its data?")) return;
-    await fetch(`/api/sites/${id}`, { method: "DELETE" });
-    if (activeSite?.id === id) setActiveSite(null);
-    await loadSites();
+    try {
+      await api(`/api/sites/${id}`, { method: "DELETE" });
+      if (activeSite?.id === id) setActiveSite(null);
+      await loadSites();
+    } catch (e) {
+      setError((e as Error).message);
+    }
   }
-
-  useEffect(() => {
-    loadHealth();
-    loadSites();
-    const id = setInterval(loadHealth, 5000);
-    return () => clearInterval(id);
-  }, []);
-
-  useEffect(() => {
-    if (!activeSite) return;
-    loadSiteData(activeSite);
-    const id = setInterval(() => loadSiteData(activeSite), 10000);
-    return () => clearInterval(id);
-  }, [activeSite?.id]);
 
   return (
     <main className="container">
@@ -97,35 +125,48 @@ export default function Home() {
           </div>
         </div>
         <div className="row">
-          <span className="status"><span className={`dot ${health?.ok ? "ok" : "bad"}`} />API</span>
-          <span className="status"><span className={`dot ${health?.db ? "ok" : "bad"}`} />DB</span>
-          <span className="status"><span className={`dot ${health?.redis ? "ok" : "bad"}`} />Redis</span>
+          <span className="status">
+            <span className={`dot ${health?.ok ? "ok" : "bad"}`} />
+            {health?.dialect === "sqlite" ? "D1" : "DB"}
+          </span>
+          <span className="status">
+            <span className={`dot ${signedIn ? "ok" : "bad"}`} />
+            {signedIn ? session?.username : "signed out"}
+          </span>
+          <a href="/settings/">Settings</a>
         </div>
       </div>
 
+      {error && <div className="banner error">{error}</div>}
+
+      {session && !session.setupComplete && (
+        <div className="banner warn">
+          This deployment has no admin account yet. <a href="/settings/">Finish setup</a> to protect it
+          before adding any API keys.
+        </div>
+      )}
+
+      {session?.setupComplete && !signedIn && (
+        <div className="banner">
+          {session.publicReads
+            ? "Viewing read-only. "
+            : "This dashboard is private. "}
+          <a href="/settings/">Sign in</a> to view your sites, run probes and manage API keys.
+        </div>
+      )}
+
       <div className="section-title">Add a site</div>
-      <form onSubmit={addSite} className="card" style={{ display: "flex", gap: 12 }}>
+      <form onSubmit={addSite} className="card row">
         <input
           type="text"
           placeholder="example.com"
           value={domainInput}
           onChange={(e) => setDomainInput(e.target.value)}
-          style={{
-            flex: 1, padding: "10px 14px", borderRadius: 8,
-            border: "1px solid var(--border)", background: "#0b0f17",
-            color: "var(--text)", fontSize: 14,
-          }}
+          aria-label="Domain to track"
+          disabled={!signedIn}
         />
-        <button
-          type="submit"
-          disabled={adding}
-          style={{
-            padding: "10px 20px", borderRadius: 8, border: "none",
-            background: "var(--accent)", color: "#001a33",
-            fontWeight: 600, cursor: adding ? "wait" : "pointer",
-          }}
-        >
-          {adding ? "Adding…" : "Add site"}
+        <button type="submit" disabled={busy || !signedIn}>
+          {busy ? "Adding…" : "Add site"}
         </button>
       </form>
 
@@ -148,16 +189,17 @@ export default function Home() {
                     <div style={{ fontWeight: 600 }}>{s.domain}</div>
                     <div className="meta">Added {new Date(s.created_at).toLocaleDateString()}</div>
                   </div>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); removeSite(s.id); }}
-                    style={{
-                      background: "transparent", border: "1px solid var(--border)",
-                      color: "var(--bad)", borderRadius: 6, padding: "4px 10px",
-                      cursor: "pointer", fontSize: 12,
-                    }}
-                  >
-                    Remove
-                  </button>
+                  {signedIn && (
+                    <button
+                      className="danger"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void removeSite(s.id);
+                      }}
+                    >
+                      Remove
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
@@ -165,44 +207,40 @@ export default function Home() {
         </>
       )}
 
-      {activeSite && (
+      {activeSite && summary && (
         <>
           <div className="section-title">Overview · {activeSite.domain}</div>
           <div className="grid">
-            <div className="card">
-              <h3>SEO · Keywords tracked</h3>
-              <div className="value">{rank?.keywords?.length ?? 0}</div>
-              <div className="meta">Updated {rank?.updated ? new Date(rank.updated).toLocaleString() : "—"}</div>
-            </div>
-            <div className="card">
-              <h3>AEO · Snippets / PAA</h3>
-              <div className="value">0</div>
-              <div className="meta">Connector pending</div>
-            </div>
-            <div className="card">
-              <h3>GEO · LLM visibility</h3>
-              <div className="value">{geo?.visibility ?? 0}%</div>
-              <div className="meta">{geo?.prompts?.length ?? 0} prompts tracked</div>
-            </div>
-            <div className="card">
-              <h3>Backlinks</h3>
-              <div className="value">{links?.backlinks?.length ?? 0}</div>
-              <div className="meta">Connector pending</div>
-            </div>
-            <div className="card">
-              <h3>Citations</h3>
-              <div className="value">0</div>
-              <div className="meta">Connector pending</div>
-            </div>
-            <div className="card">
-              <h3>Reviews</h3>
-              <div className="value">0</div>
-              <div className="meta">Connector pending</div>
-            </div>
+            <Stat title="SEO · Keywords" value={summary.seo.n} meta={`${summary.seo.clicks} clicks · ${summary.seo.impressions} impressions`} />
+            <Stat
+              title="SEO · Avg position"
+              value={summary.seo.avg_position ? summary.seo.avg_position.toFixed(1) : "—"}
+              meta="Lower is better"
+            />
+            <Stat
+              title="GEO · LLM visibility"
+              value={`${summary.geo.visibility}%`}
+              meta={`${summary.geo.cited} of ${summary.geo.n} prompts cited`}
+            />
+            <Stat title="Backlinks" value={summary.backlinks.live} meta={`${summary.backlinks.lost} lost`} />
+            <Stat
+              title="Citations"
+              value={summary.citations.n}
+              meta={summary.citations.authority ? `avg authority ${Math.round(summary.citations.authority)}` : "Run a sync"}
+            />
+            <Stat
+              title="Reviews"
+              value={summary.reviews.n}
+              meta={
+                summary.reviews.sentiment != null
+                  ? `sentiment ${summary.reviews.sentiment.toFixed(2)}`
+                  : "Connector pending"
+              }
+            />
           </div>
           <div className="card" style={{ marginTop: 16 }}>
             <div className="row" style={{ justifyContent: "space-between" }}>
-              <div>Live polling every 10s</div>
+              <div>Refreshing every 15s</div>
               <div className="meta">Last update: {lastUpdate}</div>
             </div>
           </div>
@@ -210,8 +248,20 @@ export default function Home() {
       )}
 
       <div className="footer">
-        Stack running on Termux · Next.js 15 · Express · PostgreSQL 18 · Redis 8
+        {health?.dialect === "sqlite"
+          ? "Cloudflare Pages · D1 · KV"
+          : "Self-hosted · Next.js · Hono · PostgreSQL · Redis"}
       </div>
     </main>
+  );
+}
+
+function Stat({ title, value, meta }: { title: string; value: string | number; meta: string }) {
+  return (
+    <div className="card">
+      <h3>{title}</h3>
+      <div className="value">{value}</div>
+      <div className="meta">{meta}</div>
+    </div>
   );
 }

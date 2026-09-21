@@ -1,18 +1,17 @@
-import { envKey } from "../env";
-import { pg, publishUpdate } from "../db";
-import { blendedSentiment } from "./sentiment";
-import type { ConnectorStatus, CitationKind } from "../../../../shared/types";
+import type { Ctx } from "../ports.ts";
+import { now } from "../ports.ts";
+import { getSecret } from "../secrets.ts";
+import { blendedSentiment } from "../sentiment.ts";
+import type { CitationKind, ConnectorStatus } from "../types";
 
 /**
  * Reviews and citations.
  *
  * Reviews come from key-gated platform APIs; a platform without a key is
- * reported as disabled rather than guessed at. Citations are discovered from
- * the backlinks already stored for the site and scored by source authority,
- * which needs no additional key.
+ * reported disabled rather than guessed at. Citations are derived from the
+ * backlinks already stored and scored by source authority, so they need no
+ * additional key.
  */
-
-/* ---------- Reviews ---------- */
 
 export type ReviewRow = {
   source: string;
@@ -23,11 +22,7 @@ export type ReviewRow = {
   url?: string | null;
 };
 
-type ReviewAdapter = {
-  name: string;
-  envVar: string;
-  fetch: (domain: string, key: string) => Promise<ReviewRow[]>;
-};
+type ReviewAdapter = { name: string; envVar: string; fetch: (domain: string, key: string) => Promise<ReviewRow[]> };
 
 const REVIEW_ADAPTERS: ReviewAdapter[] = [
   {
@@ -43,12 +38,11 @@ const REVIEW_ADAPTERS: ReviewAdapter[] = [
       const id = unit?.id ?? unit?.businessUnits?.[0]?.id;
       if (!id) return [];
 
-      const rev = await fetch(
-        `https://api.trustpilot.com/v1/business-units/${id}/reviews?perPage=100`,
-        { headers: { apikey: key } }
-      );
+      const rev = await fetch(`https://api.trustpilot.com/v1/business-units/${id}/reviews?perPage=100`, {
+        headers: { apikey: key },
+      });
       if (!rev.ok) throw new Error(`trustpilot reviews: ${rev.status}`);
-      return ((await rev.json() as any).reviews ?? []).map((r: any) => ({
+      return (((await rev.json()) as any).reviews ?? []).map((r: any) => ({
         source: "trustpilot",
         author: r.consumer?.displayName ?? null,
         rating: r.stars ?? null,
@@ -67,7 +61,7 @@ const REVIEW_ADAPTERS: ReviewAdapter[] = [
         { headers: { Authorization: `Token token=${key}`, "Content-Type": "application/vnd.api+json" } }
       );
       if (!res.ok) throw new Error(`g2: ${res.status}`);
-      return ((await res.json() as any).data ?? []).map((d: any) => ({
+      return (((await res.json()) as any).data ?? []).map((d: any) => ({
         source: "g2",
         author: d.attributes?.user_name ?? null,
         rating: d.attributes?.star_rating ?? null,
@@ -81,28 +75,24 @@ const REVIEW_ADAPTERS: ReviewAdapter[] = [
     name: "google_business",
     envVar: "GOOGLE_BUSINESS_API_KEY",
     async fetch(domain, key) {
-      // Resolve the place from the domain, then read its reviews.
-      const find = await fetch(
-        `https://places.googleapis.com/v1/places:searchText`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Goog-Api-Key": key,
-            "X-Goog-FieldMask": "places.id,places.displayName",
-          },
-          body: JSON.stringify({ textQuery: domain }),
-        }
-      );
+      const find = await fetch("https://places.googleapis.com/v1/places:searchText", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": key,
+          "X-Goog-FieldMask": "places.id,places.displayName",
+        },
+        body: JSON.stringify({ textQuery: domain }),
+      });
       if (!find.ok) throw new Error(`google places search: ${find.status}`);
-      const placeId = (await find.json() as any).places?.[0]?.id;
+      const placeId = ((await find.json()) as any).places?.[0]?.id;
       if (!placeId) return [];
 
       const det = await fetch(`https://places.googleapis.com/v1/places/${placeId}`, {
         headers: { "X-Goog-Api-Key": key, "X-Goog-FieldMask": "reviews" },
       });
       if (!det.ok) throw new Error(`google places details: ${det.status}`);
-      return ((await det.json() as any).reviews ?? []).map((r: any) => ({
+      return (((await det.json()) as any).reviews ?? []).map((r: any) => ({
         source: "google_business",
         author: r.authorAttribution?.displayName ?? null,
         rating: r.rating ?? null,
@@ -114,30 +104,31 @@ const REVIEW_ADAPTERS: ReviewAdapter[] = [
   },
 ];
 
-export function reviewStatus(): ConnectorStatus[] {
-  return REVIEW_ADAPTERS.map((a) => ({
-    name: a.name,
-    enabled: envKey(a.envVar) !== undefined,
-    reason: envKey(a.envVar) ? undefined : `${a.envVar} not set`,
-  }));
+export async function reviewStatus(ctx: Ctx): Promise<ConnectorStatus[]> {
+  return Promise.all(
+    REVIEW_ADAPTERS.map(async (a) => {
+      const key = await getSecret(ctx, a.envVar);
+      return { name: a.name, enabled: Boolean(key), reason: key ? undefined : `${a.envVar} not set` };
+    })
+  );
 }
 
-/**
- * Pulls reviews from every platform whose key is configured, scores sentiment,
- * and stores them. Returns per-source counts; a platform that errors is
- * reported without failing the others.
- */
+/** Pulls reviews from every configured platform and scores sentiment. */
 export async function syncReviews(
+  ctx: Ctx,
   siteId: number
 ): Promise<{ total: number; bySource: Record<string, number>; errors: string[] }> {
-  const site = await pg.query("SELECT domain FROM sites WHERE id = $1", [siteId]);
-  if (!site.rows.length) throw new Error(`site ${siteId} not found`);
-  const domain: string = site.rows[0].domain;
+  const site = await ctx.db.first<{ domain: string }>("SELECT domain FROM sites WHERE id = ?", [siteId]);
+  if (!site) throw new Error(`site ${siteId} not found`);
 
-  const enabled = REVIEW_ADAPTERS.filter((a) => envKey(a.envVar));
+  const enabled: { adapter: ReviewAdapter; key: string }[] = [];
+  for (const adapter of REVIEW_ADAPTERS) {
+    const key = await getSecret(ctx, adapter.envVar);
+    if (key) enabled.push({ adapter, key });
+  }
   if (!enabled.length) {
     throw new Error(
-      `no review platforms enabled — set one of ${REVIEW_ADAPTERS.map((a) => a.envVar).join(", ")} in .env`
+      `no review platforms enabled — add a key in Settings, or set one of ${REVIEW_ADAPTERS.map((a) => a.envVar).join(", ")}`
     );
   }
 
@@ -145,13 +136,13 @@ export async function syncReviews(
   const errors: string[] = [];
   let total = 0;
 
-  for (const adapter of enabled) {
+  for (const { adapter, key } of enabled) {
     try {
-      const rows = await adapter.fetch(domain, envKey(adapter.envVar)!);
+      const rows = await adapter.fetch(site.domain, key);
       for (const r of rows) {
-        await pg.query(
+        await ctx.db.run(
           `INSERT INTO reviews (site_id, source, author, rating, body, sentiment, posted_at, url)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             siteId,
             r.source,
@@ -171,7 +162,7 @@ export async function syncReviews(
     }
   }
 
-  await publishUpdate({ kind: "reviews", siteId, payload: { total } });
+  await ctx.bus.publish({ kind: "reviews", siteId, payload: { total } });
   return { total, bySource, errors };
 }
 
@@ -201,40 +192,38 @@ export function classifyCitation(url: string): { kind: CitationKind; authority: 
   return { kind: "other", authority: 25 };
 }
 
-/**
- * Derives authority-scored citations from the site's stored backlinks. Free —
- * it reuses data the backlink sync already pulled, so it needs no extra key.
- */
-export async function syncCitations(siteId: number): Promise<{ rows: number }> {
-  const { rows } = await pg.query(
-    "SELECT DISTINCT source FROM backlinks WHERE site_id = $1 AND lost = FALSE",
+/** Derives authority-scored citations from the site's stored backlinks. */
+export async function syncCitations(ctx: Ctx, siteId: number): Promise<{ rows: number }> {
+  const rows = await ctx.db.all<{ source: string }>(
+    "SELECT DISTINCT source FROM backlinks WHERE site_id = ? AND lost = 0",
     [siteId]
   );
 
+  const timestamp = now();
   let written = 0;
+
   for (const row of rows) {
     const { kind, authority } = classifyCitation(row.source);
     // Social chatter is not a credible citation; keep the list meaningful.
     if (kind === "other" || kind === "social") continue;
 
-    const host = (() => {
-      try {
-        return new URL(row.source.startsWith("http") ? row.source : `https://${row.source}`).hostname;
-      } catch {
-        return row.source;
-      }
-    })();
+    let host = row.source;
+    try {
+      host = new URL(row.source.startsWith("http") ? row.source : `https://${row.source}`).hostname;
+    } catch {
+      // Keep the raw value when it will not parse as a URL.
+    }
 
-    await pg.query(
-      `INSERT INTO citations (site_id, source, url, authority, kind, verified)
-       VALUES ($1, $2, $3, $4, $5, TRUE)
+    await ctx.db.run(
+      `INSERT INTO citations (site_id, source, url, authority, kind, verified, discovered_at)
+       VALUES (?, ?, ?, ?, ?, 1, ?)
        ON CONFLICT (site_id, url)
-       DO UPDATE SET authority = EXCLUDED.authority, kind = EXCLUDED.kind`,
-      [siteId, host, row.source, authority, kind]
+       DO UPDATE SET authority = excluded.authority, kind = excluded.kind`,
+      [siteId, host, row.source, authority, kind, timestamp]
     );
     written++;
   }
 
-  await publishUpdate({ kind: "citations", siteId, payload: { rows: written } });
+  await ctx.bus.publish({ kind: "citations", siteId, payload: { rows: written } });
   return { rows: written };
 }

@@ -7,7 +7,7 @@
  * there is no build step and no workspace resolution to configure.
  *
  * Consumers import it with `import type`, by relative path:
- *   import type { Site } from "../../../shared/types";
+ *   import type { Site } from "../../../shared/types.ts";
  */
 
 /* ---------- Core records ---------- */

@@ -1,5 +1,14 @@
 # Quick Start
 
+> **Deploying to Cloudflare Pages instead?** You need none of this — see the
+> "Deploy to Cloudflare Pages" section of [README.md](./README.md). Three
+> commands and a Settings page.
+>
+> **Security setup applies to both:** set `ENCRYPTION_KEY` (required to store
+> API keys) and `SETUP_TOKEN` (stops a stranger claiming the admin account on
+> a fresh deployment) before exposing the dashboard.
+
+
 From zero to a running dashboard on Termux (Android), Windows 11, or any Unix-like system.
 
 ---

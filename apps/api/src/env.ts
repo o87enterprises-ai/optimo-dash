@@ -22,7 +22,8 @@ function findEnvFile(start: string): string | undefined {
   return undefined;
 }
 
-const envFile = findEnvFile(__dirname);
+// ESM has no __dirname; import.meta.dirname is the ES-module equivalent.
+const envFile = findEnvFile(import.meta.dirname);
 if (envFile) {
   config({ path: envFile });
 } else {

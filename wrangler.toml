@@ -1,0 +1,29 @@
+name = "seo-aeo-geo-dashboard"
+compatibility_date = "2025-09-01"
+compatibility_flags = ["nodejs_compat"]
+pages_build_output_dir = "apps/web/out"
+
+# D1 holds every table. Create it once with:
+#   npx wrangler d1 create seo-aeo-geo
+# then paste the returned database_id here.
+[[d1_databases]]
+binding = "DB"
+database_name = "seo-aeo-geo"
+database_id = "REPLACE_WITH_YOUR_D1_ID"
+
+# KV caches LLM answers for 24h so repeat probes cost nothing. Optional: the
+# API falls back to a per-isolate memory cache when this is absent.
+#   npx wrangler kv namespace create SEO_CACHE
+[[kv_namespaces]]
+binding = "CACHE"
+id = "REPLACE_WITH_YOUR_KV_ID"
+
+[vars]
+# Pages to crawl per clone run. The Workers free plan allows 50 subrequests
+# and 10ms CPU per request, which a full crawl exceeds — lower this to ~8 on
+# the free plan, or run the clone engine on Workers Paid.
+CLONE_MAX_PAGES = "25"
+
+# Secrets are NOT set here. Set them once per environment:
+#   npx wrangler pages secret put ENCRYPTION_KEY
+# Generate the value with: openssl rand -base64 32

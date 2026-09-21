@@ -1,55 +1,60 @@
-import type { Request, Response } from "express";
-import { redis, UPDATES_CHANNEL } from "./db";
+import type { Context } from "hono";
+import { streamSSE } from "hono/streaming";
+import type { Redis } from "ioredis";
 
 /**
- * Server-Sent Events feed. Clients open one connection and receive
- * incremental updates instead of polling every endpoint on a timer.
+ * Server-Sent Events feed, self-hosted build only.
  *
- * Each SSE client gets its own Redis subscriber connection, because a
- * subscribed ioredis client cannot run ordinary commands. Clients may filter
- * to a single site with ?site=<id>.
+ * Each client gets its own Redis subscriber connection, because a subscribed
+ * ioredis client cannot run ordinary commands. Clients may filter to one site
+ * with ?site=<id>.
+ *
+ * The Cloudflare build has no equivalent: Workers isolates share no pub/sub,
+ * so that deployment polls instead.
  */
 
 const HEARTBEAT_MS = 15000;
+const UPDATES_CHANNEL = "dash:updates";
 
-export function streamHandler(req: Request, res: Response) {
-  const siteFilter = req.query.site ? Number(req.query.site) : null;
+export function streamHandler(c: Context, redis: Redis) {
+  const siteFilter = c.req.query("site") ? Number(c.req.query("site")) : null;
 
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache, no-transform");
-  res.setHeader("Connection", "keep-alive");
-  // Without this, nginx and similar proxies buffer the stream into silence.
-  res.setHeader("X-Accel-Buffering", "no");
-  res.flushHeaders?.();
+  // Stops proxies such as nginx from buffering the stream into silence.
+  c.header("X-Accel-Buffering", "no");
+  c.header("Cache-Control", "no-cache, no-transform");
 
-  const send = (data: unknown) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+  return streamSSE(c, async (stream) => {
+    const sub = redis.duplicate();
+    sub.on("error", (e) => console.error("[stream]", e.message));
 
-  send({ kind: "heartbeat", at: new Date().toISOString(), payload: { connected: true } });
+    let open = true;
+    stream.onAbort(() => {
+      open = false;
+      sub.disconnect();
+    });
 
-  const sub = redis.duplicate();
-  sub.on("error", (e) => console.error("[stream]", e.message));
-  sub.subscribe(UPDATES_CHANNEL).catch((e) => console.error("[stream] subscribe", e.message));
+    await stream.writeSSE({
+      data: JSON.stringify({ kind: "heartbeat", at: new Date().toISOString(), payload: { connected: true } }),
+    });
 
-  sub.on("message", (_channel, message) => {
-    try {
-      const event = JSON.parse(message);
-      if (siteFilter !== null && event.siteId !== undefined && event.siteId !== siteFilter) return;
-      send(event);
-    } catch {
-      // A malformed publish must not kill the connection.
+    await sub.subscribe(UPDATES_CHANNEL).catch((e) => console.error("[stream] subscribe", e.message));
+
+    sub.on("message", (_channel, message) => {
+      try {
+        const event = JSON.parse(message);
+        if (siteFilter !== null && event.siteId !== undefined && event.siteId !== siteFilter) return;
+        void stream.writeSSE({ data: JSON.stringify(event) });
+      } catch {
+        // A malformed publish must not kill the connection.
+      }
+    });
+
+    // Keeps intermediaries from timing out an idle connection, and doubles as
+    // the loop that holds the response open.
+    while (open) {
+      await stream.sleep(HEARTBEAT_MS);
+      if (!open) break;
+      await stream.writeSSE({ data: JSON.stringify({ kind: "heartbeat", at: new Date().toISOString() }) });
     }
   });
-
-  // Keeps intermediaries from timing out an idle connection.
-  const beat = setInterval(
-    () => send({ kind: "heartbeat", at: new Date().toISOString() }),
-    HEARTBEAT_MS
-  );
-
-  const cleanup = () => {
-    clearInterval(beat);
-    sub.disconnect();
-  };
-  req.on("close", cleanup);
-  res.on("error", cleanup);
 }

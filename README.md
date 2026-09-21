@@ -29,115 +29,180 @@ Built to run **entirely on Termux (Android)** with no cloud dependency, then dep
 
 ## Architecture
 
+The same application runs in two places. Business logic lives in `core/` and
+depends only on small interfaces; each runtime supplies its own storage.
+
 ```
-┌─────────────────────────────────────────────────────────┐
-│  apps/web   — Next.js 15 GUI (port 3000)                │
-│              3D scene + text panels                     │
-├─────────────────────────────────────────────────────────┤
-│  apps/api   — Express + Postgres + Redis (port 4000)    │
-│              REST + SSE + probes + connectors           │
-│              probes/llm · clone · debrief · stream      │
-│              connectors/{gsc,backlinks,reviews,regional}│
-├─────────────────────────────────────────────────────────┤
-│  packages/cli   — seo-geo command line                  │
-│  packages/mcp   — Model Context Protocol server         │
-│  packages/analytics — Python (pandas, sklearn, LLM SDKs)│
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  core/          shared logic — routes, services,         │
+│                 connectors, crypto, auth, schema         │
+│                 (no runtime-specific imports)            │
+├──────────────────────────────────────────────────────────┤
+│  adapters/d1.ts        D1 + KV        → Cloudflare       │
+│  adapters/postgres.ts  Postgres + Redis → self-hosted    │
+├──────────────────────────────────────────────────────────┤
+│  functions/api/  Cloudflare Pages Function (Hono)        │
+│  apps/api/       Node server (Hono + @hono/node-server)  │
+├──────────────────────────────────────────────────────────┤
+│  apps/web/       Next.js 15 GUI                          │
+│  packages/cli    seo-geo command line                    │
+│  packages/mcp    Model Context Protocol server           │
+│  packages/analytics  Python (pandas, sklearn)            │
+└──────────────────────────────────────────────────────────┘
 ```
 
-Storage:
+| | Cloudflare Pages | Self-hosted |
+|---|---|---|
+| Storage | D1 (SQLite) | PostgreSQL |
+| Cache | KV | Redis |
+| Live updates | polling | SSE (`/api/stream`) |
+| Hosting | global edge, free tier | Termux, VPS, Docker |
 
-- **PostgreSQL 18** — sites, keywords, geo_prompts, backlinks, reviews, citations, regional_metrics
-- **Redis 8** — cache, pub/sub for live updates
+Schema and queries are written once and work on both: one dialect-neutral SQL
+style, `?` placeholders rewritten for Postgres, booleans stored as 0/1, and
+timestamps as ISO-8601 text.
 
 ---
 
 ## Requirements
 
-**Termux (Android):**
+**Cloudflare Pages** — a Cloudflare account and `wrangler`. Nothing else to run.
+Note that the clone engine crawls dozens of pages per run, which exceeds the
+Workers *free* plan's 50-subrequest / 10ms-CPU limits; lower `CLONE_MAX_PAGES`
+to about 8 on free, or run on Workers Paid. Password login also expects Paid,
+because PBKDF2 costs more CPU than the free plan allows.
 
-- Termux from F-Droid (not Play Store)
-- ~2 GB free space
-- Node 22+, Python 3.11+, Postgres 16+, Redis 7+
+**Termux (Android)** — Termux from F-Droid (not Play Store), ~2 GB free space,
+Node 22+, Python 3.11+, Postgres 16+, Redis 7+.
 
-**Windows 11:** Node 22+, Python 3.11+, Postgres 16+, Redis 7+ (WSL2 or native).
+**Windows 11 / macOS / Linux** — Node 22+, Python 3.11+, Postgres 16+, Redis 7+.
 
 ---
 
-## Install
+## Deploy to Cloudflare Pages
+
+```bash
+# 1. Create the database and cache.
+npx wrangler d1 create seo-aeo-geo
+npx wrangler kv namespace create SEO_CACHE
+#    Paste the returned ids into wrangler.toml.
+
+# 2. Set the secrets.
+npx wrangler pages secret put ENCRYPTION_KEY   # openssl rand -base64 32
+npx wrangler pages secret put SETUP_TOKEN      # openssl rand -hex 16
+
+# 3. Build the static site and deploy it with its API.
+pnpm pages:deploy
+```
+
+Then open the deployment, go to **Settings**, run the one-click migration,
+create your admin account using the setup token, and paste your API keys.
+
+`ENCRYPTION_KEY` is what protects your stored keys — **back it up**. If it is
+lost or rotated, every stored credential becomes undecryptable and has to be
+re-entered.
+
+Run it locally the same way Cloudflare will:
+
+```bash
+pnpm pages:dev
+```
+
+---
+
+## Install (self-hosted)
 
 See **[QUICKSTART.md](./QUICKSTART.md)** for the full step-by-step.
-
-TL;DR:
 
 ```bash
 git clone <your-repo-url> ~/seo-aeo-geo-dashboard
 cd ~/seo-aeo-geo-dashboard
 pnpm install
 cp .env.example .env
-# edit .env — set DATABASE_URL with your Termux user
+# edit .env — DATABASE_URL and ENCRYPTION_KEY are required
 pnpm run migrate
 ```
 
 Then start:
 
 ```bash
-# Session 1
 pnpm --filter api dev      # API on :4000
-
-# Session 2
 pnpm dev                   # Web on :3000
 ```
 
-Open `http://localhost:3000`.
+Open `http://localhost:3000`, then finish setup on the Settings page.
+
+---
+
+## Security model
+
+The dashboard holds live API keys, so it is protected by default.
+
+- **Admin account.** One operator account, created on first run. The password
+  is hashed with PBKDF2-HMAC-SHA256 (600,000 iterations, per-user salt).
+- **Sessions.** A random 256-bit token in an httpOnly, SameSite=Strict,
+  Secure cookie. Only its SHA-256 digest is stored, so a database backup
+  cannot be replayed as a login.
+- **CSRF.** State-changing requests carry a per-session token.
+- **Rate limiting.** Failed logins are tracked in the database (not the cache,
+  which is only eventually consistent) and lock out after 8 attempts in 15
+  minutes. An unknown username costs the same time as a wrong password, so
+  the response does not reveal which it was.
+- **API keys at rest.** AES-256-GCM under `ENCRYPTION_KEY`, with a fresh IV
+  per record. The plaintext is never returned to the browser — the settings
+  form shows only `••••` and the last four characters. Only names on a fixed
+  allowlist can be stored.
+- **Reads.** Authenticated by default. Set `PUBLIC_READS=1` to deliberately
+  serve a read-only dashboard to anonymous visitors.
+- **First-run race.** With `SETUP_TOKEN` set, creating the admin account
+  requires it, so a stranger who finds a fresh deployment cannot claim it.
 
 ---
 
 ## Environment variables
 
-All configuration lives in `.env` at the repo root.
+**You do not need to put API keys in a file.** The Settings page stores them
+encrypted in the database, which is the recommended route on both deployments.
+A key set in the environment still works and is shown read-only in the UI.
 
-**Required to boot:**
+Required:
 
-```bash
-DATABASE_URL=postgresql://<termux-user>@localhost:5432/seo_aeo_geo
-REDIS_URL=redis://localhost:6379
-PORT=4000
-```
+| Variable | Where | Purpose |
+|---|---|---|
+| `DATABASE_URL` | self-hosted | Postgres connection string |
+| `REDIS_URL` | self-hosted | Cache and SSE pub/sub |
+| `ENCRYPTION_KEY` | both | Encrypts stored API keys. `openssl rand -base64 32`. **Back it up.** |
 
-**Optional (enable features as you add keys):**
+Recommended:
 
-```bash
-# LLM visibility (GEO)
-OPENAI_API_KEY=
-ANTHROPIC_API_KEY=
-GOOGLE_AI_API_KEY=
-PERPLEXITY_API_KEY=
+| Variable | Purpose |
+|---|---|
+| `SETUP_TOKEN` | Required to create the admin account; closes the first-run race |
+| `PUBLIC_READS` | `1` serves a read-only dashboard anonymously. Off by default |
+| `CLONE_MAX_PAGES` | Pages per clone run. Lower to ~8 on the Workers free plan |
+| `PBKDF2_ITERATIONS` | Lowers password hashing cost. Weakens security — set only if forced |
 
-# SEO data
-GOOGLE_SEARCH_CONSOLE_CREDENTIALS=
-BING_WEBMASTER_API_KEY=
-AHREFS_API_KEY=
-SEMRUSH_API_KEY=
-MOZ_API_KEY=
+On Cloudflare, bindings (`DB`, `CACHE`) live in `wrangler.toml` and secrets are
+set with `wrangler pages secret put NAME`. Everything else lives in `.env` at
+the repo root — see `.env.example`.
 
-# Reviews & citations
-GOOGLE_BUSINESS_API_KEY=
-TRUSTPILOT_API_KEY=
-G2_API_KEY=
+Optional API keys, all settable from the Settings page:
+`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_AI_API_KEY`,
+`PERPLEXITY_API_KEY`, `GOOGLE_SEARCH_CONSOLE_CREDENTIALS`,
+`BING_WEBMASTER_API_KEY`, `AHREFS_API_KEY`, `SEMRUSH_API_KEY`, `MOZ_API_KEY`,
+`GOOGLE_BUSINESS_API_KEY`, `TRUSTPILOT_API_KEY`, `G2_API_KEY`,
+`SLACK_WEBHOOK_URL`.
 
-# Notifications
-SLACK_WEBHOOK_URL=
-```
-
-Missing keys simply disable that connector — the UI greys out the corresponding card.
+A connector with no key is greyed out in the UI with the reason shown.
 
 ---
 
 ## CLI
 
 ```bash
-pnpm cli health                 # API / DB / Redis
+pnpm cli health                 # API, database, encryption and session state
+pnpm cli login --username admin # mutations require a session
+pnpm cli logout
 pnpm cli connectors             # which connectors are enabled, and what each needs
 
 pnpm cli sites list
@@ -193,7 +258,13 @@ the API is not on `http://localhost:4000`.
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| GET | `/health` | API, database and cache status |
+| GET | `/api/health` | API, database and encryption status |
+| GET | `/api/auth/session` | Setup, migration and sign-in state |
+| POST | `/api/auth/setup` | Create the admin account (once) |
+| POST | `/api/auth/login` · `/api/auth/logout` | Session lifecycle |
+| GET | `/api/settings/credentials` | Credential status — masked, never plaintext |
+| PUT·DELETE | `/api/settings/credentials/:name` | Store or remove a key |
+| POST | `/api/admin/migrate` | Apply the schema (open until setup completes) |
 | GET | `/api/connectors` | Which connectors are enabled, and what each is missing |
 | GET | `/api/sites` | List sites |
 | POST | `/api/sites` | Add a site (`{ domain, name? }`) |
@@ -211,7 +282,10 @@ the API is not on `http://localhost:4000`.
 | POST | `/api/clone` | Clone report (`{ targetDomain, siteId }`) |
 | GET | `/api/sites/:id/clone` | Stored clone reports |
 | POST·GET | `/api/sites/:id/debrief` | Prompt pack; add `?format=md` for markdown |
-| GET | `/api/stream` | SSE live feed; `?site=<id>` to filter |
+| GET | `/api/stream` | SSE live feed, self-hosted only; `?site=<id>` to filter |
+
+All routes except `/api/health`, `/api/auth/*` and `/api/admin/migrate`
+require a session unless `PUBLIC_READS=1`.
 
 ---
 
@@ -278,10 +352,11 @@ Full startup cheat sheet in [QUICKSTART.md](./QUICKSTART.md).
 
 ## Deploy
 
-- **Web → Vercel** (`npx vercel --prod`)
-- **API + DB → Railway** (`railway up` with Postgres & Redis plugins)
-- **API only → Fly.io** (`fly launch`)
-- **Local only → Cloudflare Tunnel** (`cloudflared tunnel --url http://localhost:3000`)
+- **Cloudflare Pages** (recommended) — see [above](#deploy-to-cloudflare-pages).
+  `pnpm pages:deploy`.
+- **Self-hosted** — run `apps/api` (Node 22+) behind any reverse proxy with
+  Postgres and Redis; serve `apps/web` with `next start` or export it statically.
+- **Local only** — `cloudflared tunnel --url http://localhost:3000`.
 
 ---
 
@@ -295,15 +370,15 @@ Full startup cheat sheet in [QUICKSTART.md](./QUICKSTART.md).
 | Debrief generator | ✅ done |
 | GSC + backlinks + reviews + citations + regional connectors | ✅ done |
 | MCP + CLI wired to live endpoints | ✅ done |
+| Cloudflare Pages deployment (D1 + KV) | ✅ done |
+| Admin auth + encrypted API key entry | ✅ done |
 | 3D scene + hover modals | ⏳ next |
 | View mode switcher + comparison overlay | ⏳ |
 | World map (Leaflet) + regional drill-down | ⏳ |
-| Auth, multi-tenant, RBAC | later |
+| Multi-tenant, RBAC | later |
 
-The backend, CLI and MCP server are feature-complete against
-[HANDOFF.md](./HANDOFF.md). What remains is the 3D-first web GUI — the API
-endpoints it needs (`/api/sites/:id/summary`, `/api/sites/:id/regional`,
-`/api/stream`) are already live.
+What remains is the 3D-first GUI. The endpoints it needs
+(`/api/sites/:id/summary`, `/api/sites/:id/regional`, `/api/stream`) are live.
 
 ---
 
