@@ -1,16 +1,19 @@
 {
   "name": "cli",
   "version": "0.1.0",
-  "bin": { "seo-geo": "./src/index.ts" },
-  "scripts": { "start": "ts-node src/index.ts", "build": "tsc" },
+  "bin": {
+    "seo-geo": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "node src/index.ts",
+    "build": "tsc --noEmit"
+  },
   "dependencies": {
-    "commander": "^12.1.0",
-    "node-fetch": "^3.3.2",
-    "dotenv": "^16.4.5"
+    "commander": "^12.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "ts-node": "^10.9.2",
     "typescript": "^5.6.0"
-  }
+  },
+  "type": "module"
 }

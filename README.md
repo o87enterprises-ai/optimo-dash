@@ -13,15 +13,15 @@ Built to run **entirely on Termux (Android)** with no cloud dependency, then dep
 
 | Layer | What it does |
 |---|---|
-| **SEO** | Keyword rankings, impressions, clicks, position over time (via Google Search Console, Bing Webmaster). |
-| **AEO** | Featured snippet capture, People Also Ask, FAQ schema coverage. |
+| **SEO** | Keyword rankings, impressions, clicks and position via Google Search Console. A Bing Webmaster connector is _planned_. |
+| **AEO** | FAQ schema coverage and question-keyword analysis, surfaced through the clone report and debrief. Featured snippet / People Also Ask capture is _planned_. |
 | **GEO** | Prompt-based LLM visibility — checks whether GPT, Claude, Gemini, Perplexity cite your domain when asked real user questions. |
-| **Backlinks** | New/lost links, domain authority, anchor text, competitor gaps. |
+| **Backlinks** | New/lost links, domain authority, anchor text, competitor gaps. Ahrefs and Moz when keyed, Common Crawl for free. |
 | **Citations** | Authority-scored credible sources (.gov, .edu, journals, directories). |
-| **Reviews** | Google Business, Trustpilot, G2, Yelp, App Store, Play Store — with sentiment and reply drafting. |
-| **3D View** | Interactive "data galaxy" — zoom / pan / tilt / fullscreen on touch or mouse. Hover any node for detail modals. |
-| **Comparison** | Overlay your site against global benchmarks, top performers, or a specific competitor. |
-| **World Map** | Regional SEO/AEO/GEO intel with choropleth, bubbles, and flow arcs. |
+| **Reviews** | Google Business, Trustpilot and G2, with sentiment scoring. Yelp, App Store, Play Store and reply drafting are _planned_. |
+| **3D View** _(planned)_ | Interactive "data galaxy" — zoom / pan / tilt / fullscreen on touch or mouse. Hover any node for detail modals. |
+| **Comparison** _(planned)_ | Overlay your site against global benchmarks, top performers, or a specific competitor. |
+| **World Map** _(planned)_ | Regional SEO/AEO/GEO intel with choropleth, bubbles, and flow arcs. The `/api/sites/:id/regional` data behind it is live. |
 | **Clone Engine** | Reverse-engineer a public competitor's content/schema/backlink strategy using only free data. |
 | **Debrief** | Turn raw findings into prompt-engineering-grade prompts you can hand to an agency or paste into ChatGPT/Claude. |
 
@@ -36,6 +36,8 @@ Built to run **entirely on Termux (Android)** with no cloud dependency, then dep
 ├─────────────────────────────────────────────────────────┤
 │  apps/api   — Express + Postgres + Redis (port 4000)    │
 │              REST + SSE + probes + connectors           │
+│              probes/llm · clone · debrief · stream      │
+│              connectors/{gsc,backlinks,reviews,regional}│
 ├─────────────────────────────────────────────────────────┤
 │  packages/cli   — seo-geo command line                  │
 │  packages/mcp   — Model Context Protocol server         │
@@ -58,7 +60,7 @@ Storage:
 - ~2 GB free space
 - Node 22+, Python 3.11+, Postgres 16+, Redis 7+
 
-**Windows 11:** Warp terminal, PowerShell as admin (see `install-windows.ps1`).
+**Windows 11:** Node 22+, Python 3.11+, Postgres 16+, Redis 7+ (WSL2 or native).
 
 ---
 
@@ -135,15 +137,32 @@ Missing keys simply disable that connector — the UI greys out the correspondin
 ## CLI
 
 ```bash
-pnpm cli health
+pnpm cli health                 # API / DB / Redis
+pnpm cli connectors             # which connectors are enabled, and what each needs
+
 pnpm cli sites list
 pnpm cli sites add example.com
+pnpm cli sites remove 1
+
 pnpm cli rank --site 1
 pnpm cli geo --site 1
 pnpm cli geo probe --site 1 --prompt "best crm for startups"
+pnpm cli geo probe --site 1 --prompt "..." --models gpt-4o,claude-3.5
 pnpm cli backlinks --site 1
+pnpm cli reviews --site 1
+pnpm cli citations --site 1
+pnpm cli regional --site 1 --metric clicks
+
+pnpm cli sync gsc --site 1
+pnpm cli sync backlinks --site 1
+pnpm cli sync reviews --site 1
+pnpm cli sync citations --site 1
+pnpm cli sync regional --site 1
+
 pnpm cli clone --target competitor.com --site 1
 pnpm cli debrief --site 1 --scope full --out debrief.md
+pnpm cli stream --site 1        # tails the SSE feed
+pnpm cli mcp serve
 ```
 
 Add `--json` to any command for machine-readable output.
@@ -152,19 +171,51 @@ Add `--json` to any command for machine-readable output.
 
 ## MCP server (AI agents)
 
-The MCP server exposes tools, resources, and prompts so AI agents can query the dashboard.
+The MCP server exposes the dashboard to AI agents over stdio. Every tool is a
+wrapper over the same REST API the GUI uses, so agents and humans see identical
+data.
 
 ```bash
 pnpm mcp:serve
 ```
 
-Tools exposed: `list_sites`, `get_live_rankings`, `get_llm_visibility`, `list_backlinks`, `run_geo_prompt`, `clone_strategy`, `generate_debrief`.
+**Tools:** `list_sites`, `get_live_rankings`, `get_llm_visibility`,
+`list_backlinks`, `run_geo_prompt`, `clone_strategy`, `generate_debrief`.
 
-Configure your MCP client to run `pnpm mcp:serve` over stdio.
+**Resources:** `site://list`, `site://{id}/summary`, `site://{id}/geo`.
+
+Configure your MCP client to run `pnpm mcp:serve` over stdio. Set `API_URL` if
+the API is not on `http://localhost:4000`.
 
 ---
 
-## 3D Dashboard (planned / in progress)
+## API reference
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/health` | API, database and cache status |
+| GET | `/api/connectors` | Which connectors are enabled, and what each is missing |
+| GET | `/api/sites` | List sites |
+| POST | `/api/sites` | Add a site (`{ domain, name? }`) |
+| DELETE | `/api/sites/:id` | Remove a site and its data |
+| GET | `/api/sites/:id/summary` | Headline counts for every layer, in one round trip |
+| GET | `/api/sites/:id/rank` | Keyword rankings |
+| GET | `/api/sites/:id/geo` | LLM visibility, with a per-model breakdown |
+| GET | `/api/sites/:id/backlinks` | Backlinks, including lost links |
+| GET | `/api/sites/:id/reviews` | Reviews with sentiment |
+| GET | `/api/sites/:id/citations` | Authority-scored citations |
+| GET | `/api/sites/:id/regional` | Country rollup for the world map |
+| POST | `/api/sites/:id/prompts` | Run an LLM probe (`{ prompt, models? }`) |
+| GET | `/api/sites/:id/prompts/estimate` | Estimated call count before spending |
+| POST | `/api/sites/:id/sync/{gsc,backlinks,reviews,citations,regional}` | Pull fresh data |
+| POST | `/api/clone` | Clone report (`{ targetDomain, siteId }`) |
+| GET | `/api/sites/:id/clone` | Stored clone reports |
+| POST·GET | `/api/sites/:id/debrief` | Prompt pack; add `?format=md` for markdown |
+| GET | `/api/stream` | SSE live feed; `?site=<id>` to filter |
+
+---
+
+## 3D Dashboard (planned)
 
 The top ~65 vh of the GUI is a live 3D scene:
 
@@ -217,6 +268,9 @@ pnpm -r exec tsc --noEmit
   termux-wake-lock
   ```
 - Next.js on Termux uses the WASM SWC binary. Do **not** add `--turbopack` to the dev script.
+- Behind an HTTP proxy, Node's `fetch` ignores `HTTPS_PROXY` unless you start
+  the API with `NODE_USE_ENV_PROXY=1`. The clone engine and every connector
+  make outbound requests, so set it if they time out immediately.
 
 Full startup cheat sheet in [QUICKSTART.md](./QUICKSTART.md).
 
@@ -236,21 +290,26 @@ Full startup cheat sheet in [QUICKSTART.md](./QUICKSTART.md).
 | Phase | Status |
 |---|---|
 | Scaffold, DB, live API + GUI | ✅ done |
-| LLM visibility probe + SSE stream | ⏳ next |
-| 3D scene + hover modals | ⏳ |
+| LLM visibility probe + SSE stream | ✅ done |
+| Clone engine (free-data MVP) | ✅ done |
+| Debrief generator | ✅ done |
+| GSC + backlinks + reviews + citations + regional connectors | ✅ done |
+| MCP + CLI wired to live endpoints | ✅ done |
+| 3D scene + hover modals | ⏳ next |
 | View mode switcher + comparison overlay | ⏳ |
 | World map (Leaflet) + regional drill-down | ⏳ |
-| Clone engine (free-data MVP) | ⏳ |
-| Debrief generator | ⏳ |
-| GSC + backlinks + reviews connectors | ⏳ |
-| MCP + CLI wired to live endpoints | ⏳ |
 | Auth, multi-tenant, RBAC | later |
+
+The backend, CLI and MCP server are feature-complete against
+[HANDOFF.md](./HANDOFF.md). What remains is the 3D-first web GUI — the API
+endpoints it needs (`/api/sites/:id/summary`, `/api/sites/:id/regional`,
+`/api/stream`) are already live.
 
 ---
 
 ## License
 
-MIT — see `LICENSE` if present, else add one before publishing.
+MIT — see [LICENSE](./LICENSE).
 
 ---
 
@@ -258,5 +317,5 @@ MIT — see `LICENSE` if present, else add one before publishing.
 
 1. Fork
 2. `git checkout -b feat/your-feature`
-3. `pnpm -r build && pnpm -r test`
+3. `pnpm -r build` and `pnpm -r exec tsc --noEmit`
 4. Open a PR
