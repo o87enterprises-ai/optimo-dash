@@ -2,6 +2,10 @@
 
 A live, self-hosted dashboard for tracking **SEO**, **AEO** (Answer Engine Optimization), and **GEO** (Generative Engine Optimization) — plus backlinks, citations, and reviews — for any website you own.
 
+**Live preview:** https://optimo-dash.pages.dev — running on Cloudflare Pages
+with D1 and KV. It is private by default, so it shows the sign-in screen until
+you create the admin account.
+
 Built to run **entirely on Termux (Android)** with no cloud dependency, then deployable to Vercel / Railway / Fly.io when you're ready.
 
 - **Non-programmers** get a GUI with add/remove sites, live cards, and one-click debriefs.
@@ -69,8 +73,7 @@ timestamps as ISO-8601 text.
 **Cloudflare Pages** — a Cloudflare account and `wrangler`. Nothing else to run.
 Note that the clone engine crawls dozens of pages per run, which exceeds the
 Workers *free* plan's 50-subrequest / 10ms-CPU limits; lower `CLONE_MAX_PAGES`
-to about 8 on free, or run on Workers Paid. Password login also expects Paid,
-because PBKDF2 costs more CPU than the free plan allows.
+to about 8 on free, or run on Workers Paid.
 
 **Termux (Android)** — Termux from F-Droid (not Play Store), ~2 GB free space,
 Node 22+, Python 3.11+, Postgres 16+, Redis 7+.
@@ -94,6 +97,8 @@ npx wrangler pages secret put SETUP_TOKEN      # openssl rand -hex 16
 # 3. Build the static site and deploy it with its API.
 pnpm pages:deploy
 ```
+
+See **[docs/DEPLOY.md](./docs/DEPLOY.md)** for the exact sequence used for the live preview.
 
 Then open the deployment, go to **Settings**, run the one-click migration,
 create your admin account using the setup token, and paste your API keys.
@@ -139,7 +144,12 @@ Open `http://localhost:3000`, then finish setup on the Settings page.
 The dashboard holds live API keys, so it is protected by default.
 
 - **Admin account.** One operator account, created on first run. The password
-  is hashed with PBKDF2-HMAC-SHA256 (600,000 iterations, per-user salt).
+  is hashed with PBKDF2-HMAC-SHA256 (100,000 iterations, per-user salt).
+  That is the ceiling the Workers runtime allows — it rejects PBKDF2 above
+  100,000 iterations outright — and is below OWASP's 600,000 recommendation.
+  The same cap applies to the self-hosted build so a password stays valid
+  across both deployments. For a stronger factor, put the deployment behind
+  Cloudflare Access rather than raising this.
 - **Sessions.** A random 256-bit token in an httpOnly, SameSite=Strict,
   Secure cookie. Only its SHA-256 digest is stored, so a database backup
   cannot be replayed as a login.
@@ -180,7 +190,7 @@ Recommended:
 | `SETUP_TOKEN` | Required to create the admin account; closes the first-run race |
 | `PUBLIC_READS` | `1` serves a read-only dashboard anonymously. Off by default |
 | `CLONE_MAX_PAGES` | Pages per clone run. Lower to ~8 on the Workers free plan |
-| `PBKDF2_ITERATIONS` | Lowers password hashing cost. Weakens security — set only if forced |
+| `PBKDF2_ITERATIONS` | Password hashing rounds. Clamped to 100,000, the Workers ceiling |
 
 On Cloudflare, bindings (`DB`, `CACHE`) live in `wrangler.toml` and secrets are
 set with `wrangler pages secret put NAME`. Everything else lives in `.env` at

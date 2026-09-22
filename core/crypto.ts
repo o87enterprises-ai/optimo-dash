@@ -8,13 +8,25 @@
  * - API keys at rest: AES-256-GCM under a master key supplied by the
  *   deployment (ENCRYPTION_KEY), with a fresh random IV per record.
  *
- * Note on CPU: PBKDF2 at the default iteration count costs a few hundred
- * milliseconds of CPU, which exceeds the Workers *free* plan's 10ms budget.
- * Password login therefore expects Workers Paid. PBKDF2_ITERATIONS can be
- * lowered, but that directly weakens offline-cracking resistance.
+ * Iteration count: the Workers runtime refuses PBKDF2 above 100,000
+ * iterations outright ("iteration counts above 100000 are not supported"),
+ * so that is the ceiling here. It is below OWASP's 600,000 recommendation for
+ * PBKDF2-HMAC-SHA256, and deliberately so — the alternative is a login that
+ * cannot run on Cloudflare at all.
+ *
+ * The cap is applied on both runtimes rather than only on Workers, so a
+ * password hashed by the self-hosted build still verifies on the Cloudflare
+ * build and vice versa. A hash is stored with the count used to produce it,
+ * so raising this later does not invalidate existing passwords.
+ *
+ * If you need a higher work factor, put the deployment behind Cloudflare
+ * Access or another SSO layer rather than raising this past the runtime limit.
  */
 
-const DEFAULT_ITERATIONS = 600_000;
+/** Hard ceiling imposed by the Workers WebCrypto implementation. */
+export const MAX_PBKDF2_ITERATIONS = 100_000;
+
+const DEFAULT_ITERATIONS = MAX_PBKDF2_ITERATIONS;
 const SALT_BYTES = 16;
 const IV_BYTES = 12;
 const KEY_BITS = 256;
@@ -82,11 +94,14 @@ export async function hashPassword(
   password: string,
   iterations = DEFAULT_ITERATIONS
 ): Promise<PasswordHash> {
+  // Clamped rather than rejected: a deployment that asks for more should get
+  // the strongest count the runtime allows, not a failed login.
+  const rounds = Math.min(Math.max(1000, iterations), MAX_PBKDF2_ITERATIONS);
   const salt = randomBytes(SALT_BYTES);
-  const hash = await pbkdf2(password, salt, iterations);
+  const hash = await pbkdf2(password, salt, rounds);
   return {
     algorithm: "pbkdf2-sha256",
-    iterations,
+    iterations: rounds,
     salt: toBase64(salt),
     hash: toBase64(hash),
   };
@@ -95,6 +110,15 @@ export async function hashPassword(
 /** Verifies a password against a stored hash, in constant time. */
 export async function verifyPassword(password: string, stored: PasswordHash): Promise<boolean> {
   if (stored.algorithm !== "pbkdf2-sha256") return false;
+  if (stored.iterations > MAX_PBKDF2_ITERATIONS) {
+    // Hashed by a runtime with a higher ceiling (e.g. Node) and now being
+    // checked on Workers, which cannot recompute it. Say so plainly instead
+    // of failing as a generic 500.
+    throw new Error(
+      `stored password uses ${stored.iterations} PBKDF2 iterations, above this runtime's limit of ` +
+        `${MAX_PBKDF2_ITERATIONS}. Reset the admin password on the deployment that created it.`
+    );
+  }
   const hash = await pbkdf2(password, fromBase64(stored.salt), stored.iterations);
   return timingSafeEqual(toBase64(hash), stored.hash);
 }

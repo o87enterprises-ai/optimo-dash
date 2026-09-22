@@ -9,14 +9,14 @@ pages_build_output_dir = "apps/web/out"
 [[d1_databases]]
 binding = "DB"
 database_name = "seo-aeo-geo"
-database_id = "REPLACE_WITH_YOUR_D1_ID"
+database_id = "27c699da-13ad-47eb-8a57-c8f64a2b982b"
 
 # KV caches LLM answers for 24h so repeat probes cost nothing. Optional: the
 # API falls back to a per-isolate memory cache when this is absent.
 #   npx wrangler kv namespace create SEO_CACHE
 [[kv_namespaces]]
 binding = "CACHE"
-id = "REPLACE_WITH_YOUR_KV_ID"
+id = "5e4f9159108e4c00a96c9f55304a5b7b"
 
 [vars]
 # Pages to crawl per clone run. The Workers free plan allows 50 subrequests

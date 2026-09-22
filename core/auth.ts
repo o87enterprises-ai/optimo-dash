@@ -24,6 +24,8 @@ export const CSRF_HEADER = "x-csrf-token";
  */
 function iterations(ctx: Ctx): number | undefined {
   const raw = Number(ctx.env.PBKDF2_ITERATIONS);
+  // hashPassword clamps to the runtime ceiling, so an over-large value here
+  // is harmless rather than fatal.
   return Number.isInteger(raw) && raw >= 1000 ? raw : undefined;
 }
 
