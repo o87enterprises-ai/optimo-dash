@@ -289,23 +289,46 @@ require a session unless `PUBLIC_READS=1`.
 
 ---
 
-## 3D Dashboard (planned)
+## The dashboard
 
-The top ~65 vh of the GUI is a live 3D scene:
+The top of the page is a live 3D scene; the records that feed it sit directly
+beneath, and a filter applies to both at once.
 
-- Central node = your site
-- Inner ring = pages (size = traffic)
-- Mid ring = keywords (color = rank)
-- Outer ring = LLM prompts (glow = cited)
-- Arcs = backlinks
+**The data galaxy.** Your site is the centre. Each shell is one kind of record:
 
-Controls: one-finger drag = rotate, pinch = zoom, twist = tilt, header button = fullscreen. Hover any node for a detail modal.
+| Ring | Shape | What colour and size mean |
+|---|---|---|
+| Keywords | ◆ octahedron | brighter = better position · larger = more impressions |
+| LLM prompts | ◍ torus knot | glowing green = cited · red = not cited |
+| Citations | ▲ tetrahedron | brighter and larger = higher authority |
+| Backlinks | ● sphere + arc | brighter = higher domain authority · amber = lost |
 
-View modes: **My Sites** · **Global** · **Top Performers** · **Comparison**.
+Identity is carried by **shape and ring, not hue**. That is deliberate: no
+categorical palette keeps more than three colours separable under
+colour-vision deficiency when any two marks can sit side by side. Colour is
+therefore free to do the two jobs it is good at — magnitude (one sequential
+blue ramp) and state (the reserved status palette, always with a mark and a
+label beside it).
 
-Under the 3D scene: tabbed text panel (Overview, Keywords, GEO Prompts, Backlinks, Reviews, Citations, Clone, Debrief, Regional).
+Drag to orbit, pinch or scroll to zoom, two fingers to pan. Hover or tap any
+node for detail; click it to jump to its row in the table below. There is a
+fullscreen toggle, a reset-view button and an auto-rotate switch.
 
-See **[HANDOFF.md](./HANDOFF.md)** for the full build plan.
+**It degrades.** On a device with fewer than four cores, or without WebGL, the
+scene renders as 2D SVG with the same shapes, the same colour scales and the
+same data — and three.js is never downloaded, because the import is dynamic.
+You can also switch to 2D by hand at any time. Every mark in the 2D view is
+keyboard-focusable.
+
+**The panels.** Overview (stat tiles), Keywords, GEO prompts, Backlinks,
+Reviews, Citations, Regional, Clone and Debrief. Every table sorts, and every
+table doubles as the accessible view of the scene above it.
+
+**Regional.** A Leaflet world map on OpenStreetMap tiles — no Mapbox token
+needed. Countries are drawn as area-proportional bubbles coloured by the
+metric you pick (clicks, impressions, LLM citations, average position), with a
+sortable country table underneath. Clicking a country scopes the regional
+debrief to it.
 
 ---
 
@@ -372,13 +395,18 @@ Full startup cheat sheet in [QUICKSTART.md](./QUICKSTART.md).
 | MCP + CLI wired to live endpoints | ✅ done |
 | Cloudflare Pages deployment (D1 + KV) | ✅ done |
 | Admin auth + encrypted API key entry | ✅ done |
-| 3D scene + hover modals | ⏳ next |
-| View mode switcher + comparison overlay | ⏳ |
-| World map (Leaflet) + regional drill-down | ⏳ |
+| 3D scene, hover detail, 2D fallback | ✅ done |
+| Tabbed record panels + filters | ✅ done |
+| World map + regional drill-down | ✅ done |
+| Cross-user benchmarks ("global", "top performers") | needs multiple users |
 | Multi-tenant, RBAC | later |
 
-What remains is the 3D-first GUI. The endpoints it needs
-(`/api/sites/:id/summary`, `/api/sites/:id/regional`, `/api/stream`) are live.
+The view-mode switcher from the original plan offered **Global** and **Top
+Performers** built on anonymised cross-user telemetry. That data does not
+exist in a self-hosted, single-operator deployment, and seeding it with
+invented industry averages would put made-up numbers next to real ones. The
+site switcher is real; those two modes are deferred until there is something
+true to put behind them.
 
 ---
 

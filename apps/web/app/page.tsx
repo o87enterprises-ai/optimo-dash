@@ -1,84 +1,150 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import dynamic from "next/dynamic";
+import { useCallback, useEffect, useMemo, useState } from "react";
+
 import { ApiError, api, loadSession } from "../lib/api";
 import type { SessionState } from "../lib/api";
+import { buildSceneData } from "../lib/scene-data";
+import type { SceneNode } from "../lib/scene-data";
+import FilterPanel, { DEFAULT_FILTERS, withinRange } from "../components/FilterPanel";
+import type { Filters } from "../components/FilterPanel";
+import SceneStage from "../components/SceneStage";
+import OverviewPanel from "../components/panels/OverviewPanel";
+import ClonePanel from "../components/panels/ClonePanel";
+import DebriefPanel from "../components/panels/DebriefPanel";
+import {
+  BacklinksPanel,
+  CitationsPanel,
+  GeoPromptsPanel,
+  KeywordsPanel,
+  ReviewsPanel,
+} from "../components/panels/RecordPanels";
 
-type Health = { ok: boolean; db: boolean; dialect: string; encryptionConfigured: boolean };
+/**
+ * The dashboard: a live scene on top, the records that feed it underneath.
+ *
+ * Leaflet touches `window` at import time, so the map is loaded dynamically
+ * and only when its tab is opened.
+ */
+const WorldMap = dynamic(() => import("../components/WorldMap"), {
+  ssr: false,
+  loading: () => <div className="empty">Loading map…</div>,
+});
+
 type Site = { id: number; domain: string; name: string; created_at: string };
-type Summary = {
-  seo: { n: number; clicks: number; impressions: number; avg_position: number | null };
-  geo: { n: number; cited: number; visibility: number };
-  backlinks: { live: number; lost: number };
-  reviews: { n: number; sentiment: number | null; rating: number | null };
-  citations: { n: number; authority: number | null };
-  updated: string;
-};
+
+const TABS = [
+  { key: "overview", label: "Overview" },
+  { key: "keywords", label: "Keywords" },
+  { key: "geo", label: "GEO prompts" },
+  { key: "backlinks", label: "Backlinks" },
+  { key: "reviews", label: "Reviews" },
+  { key: "citations", label: "Citations" },
+  { key: "regional", label: "Regional" },
+  { key: "clone", label: "Clone" },
+  { key: "debrief", label: "Debrief" },
+] as const;
+
+type TabKey = (typeof TABS)[number]["key"];
 
 export default function Home() {
-  const [health, setHealth] = useState<Health | null>(null);
   const [session, setSession] = useState<SessionState | null>(null);
   const [sites, setSites] = useState<Site[]>([]);
-  const [activeSite, setActiveSite] = useState<Site | null>(null);
-  const [summary, setSummary] = useState<Summary | null>(null);
+  const [activeId, setActiveId] = useState<number | null>(null);
+  const [tab, setTab] = useState<TabKey>("overview");
+  const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
+  const [focus, setFocus] = useState<string | undefined>();
+  const [country, setCountry] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [domainInput, setDomainInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [lastUpdate, setLastUpdate] = useState("—");
 
-  const loadHealth = useCallback(async () => {
-    try {
-      setHealth(await api<Health>("/api/health"));
-    } catch {
-      setHealth({ ok: false, db: false, dialect: "?", encryptionConfigured: false });
-    }
-  }, []);
+  const [summary, setSummary] = useState<any | null>(null);
+  const [keywords, setKeywords] = useState<any[]>([]);
+  const [prompts, setPrompts] = useState<any[]>([]);
+  const [backlinks, setBacklinks] = useState<any[]>([]);
+  const [reviews, setReviews] = useState<any[]>([]);
+  const [citations, setCitations] = useState<any[]>([]);
+  const [regional, setRegional] = useState<{ countries: Record<string, any> }>({ countries: {} });
+
+  const signedIn = session?.authenticated ?? false;
+  const activeSite = sites.find((s) => s.id === activeId) ?? null;
 
   const loadSites = useCallback(async () => {
     try {
       const data = await api<Site[]>("/api/sites");
       setSites(data);
-      setActiveSite((current) => current ?? data[0] ?? null);
+      setActiveId((current) => current ?? data[0]?.id ?? null);
     } catch (e) {
-      // Reads are authenticated unless the deployment opts into public reads.
-      if (e instanceof ApiError && e.status === 401) {
-        setSites([]);
-        setActiveSite(null);
-        return;
-      }
+      if (e instanceof ApiError && e.status === 401) return;
       throw e;
     }
   }, []);
 
-  const loadSummary = useCallback(async (site: Site) => {
-    setSummary(await api<Summary>(`/api/sites/${site.id}/summary`));
-    setLastUpdate(new Date().toLocaleTimeString());
+  /** One pass over every endpoint the dashboard renders. */
+  const loadSiteData = useCallback(async (id: number) => {
+    const [s, r, g, b, rv, ct, rg] = await Promise.all([
+      api(`/api/sites/${id}/summary`),
+      api(`/api/sites/${id}/rank`),
+      api(`/api/sites/${id}/geo`),
+      api(`/api/sites/${id}/backlinks`),
+      api(`/api/sites/${id}/reviews`),
+      api(`/api/sites/${id}/citations`),
+      api(`/api/sites/${id}/regional`),
+    ]);
+    setSummary(s);
+    setKeywords((r as any).keywords ?? []);
+    setPrompts((g as any).prompts ?? []);
+    setBacklinks((b as any).backlinks ?? []);
+    setReviews((rv as any).reviews ?? []);
+    setCitations((ct as any).citations ?? []);
+    setRegional((rg as any) ?? { countries: {} });
   }, []);
 
   useEffect(() => {
-    void loadHealth();
     void loadSession()
       .then(async (state) => {
         setSession(state);
-        // Skip the request entirely when it is known to be unauthorised;
-        // firing it anyway would only log a 401 in the console.
         if (state.authenticated || state.publicReads) {
           await loadSites().catch((e) => setError((e as Error).message));
         }
       })
       .catch(() => undefined);
-    const id = setInterval(loadHealth, 10000);
-    return () => clearInterval(id);
-  }, [loadHealth, loadSites]);
+  }, [loadSites]);
 
   useEffect(() => {
-    if (!activeSite) return;
-    void loadSummary(activeSite).catch(() => undefined);
-    const id = setInterval(() => void loadSummary(activeSite).catch(() => undefined), 15000);
-    return () => clearInterval(id);
-  }, [activeSite, loadSummary]);
+    if (activeId == null) return;
+    void loadSiteData(activeId).catch((e) => setError((e as Error).message));
+    // The Cloudflare build has no SSE, so both deployments poll on the same
+    // interval; it is cheap next to the render cost of the scene.
+    const timer = setInterval(() => void loadSiteData(activeId).catch(() => undefined), 20000);
+    return () => clearInterval(timer);
+  }, [activeId, loadSiteData]);
 
-  const signedIn = session?.authenticated ?? false;
+  /* ---------- Filtering: applied to the scene and the tables alike ---------- */
+
+  const filtered = useMemo(() => {
+    const { days, categories } = filters;
+    return {
+      keywords: categories.keywords ? keywords.filter((k) => withinRange(k, days, "updated_at")) : [],
+      prompts: categories.prompts ? prompts.filter((p) => withinRange(p, days, "updated_at")) : [],
+      citations: categories.citations ? citations.filter((c) => withinRange(c, days, "discovered_at")) : [],
+      backlinks: categories.backlinks ? backlinks.filter((b) => withinRange(b, days, "first_seen")) : [],
+    };
+  }, [filters, keywords, prompts, citations, backlinks]);
+
+  const sceneData = useMemo(
+    () => buildSceneData({ domain: activeSite?.domain ?? "—", ...filtered }),
+    [activeSite, filtered]
+  );
+
+  /** Clicking a node jumps to the matching row in the table below. */
+  const onSelectNode = useCallback((node: SceneNode) => {
+    setTab(node.tab as TabKey);
+    setFocus(node.title);
+    document.getElementById("records")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
 
   async function addSite(e: React.FormEvent) {
     e.preventDefault();
@@ -91,7 +157,7 @@ export default function Home() {
         body: JSON.stringify({ domain: domainInput }),
       });
       setDomainInput("");
-      setActiveSite(site);
+      setActiveId(site.id);
       await loadSites();
     } catch (e) {
       setError(
@@ -104,164 +170,114 @@ export default function Home() {
     }
   }
 
-  async function removeSite(id: number) {
-    if (!confirm("Remove this site and all its data?")) return;
-    try {
-      await api(`/api/sites/${id}`, { method: "DELETE" });
-      if (activeSite?.id === id) setActiveSite(null);
-      await loadSites();
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }
-
   return (
     <main className="container">
-      <div className="header">
+      <header className="header">
         <div>
           <div className="title">SEO / AEO / GEO Dashboard</div>
           <div className="subtitle">
-            {activeSite ? `Tracking: ${activeSite.domain}` : "Add a site to start tracking"}
+            {activeSite ? `Tracking ${activeSite.domain}` : "Add a site to start tracking"}
           </div>
         </div>
         <div className="row">
-          <span className="status">
-            <span className={`dot ${health?.ok ? "ok" : "bad"}`} />
-            {health?.dialect === "sqlite" ? "D1" : "DB"}
-          </span>
+          {sites.length > 0 && (
+            <>
+              <label className="sr-only" htmlFor="site-switcher">Site</label>
+              <select
+                id="site-switcher"
+                value={activeId ?? ""}
+                onChange={(e) => {
+                  setActiveId(Number(e.target.value));
+                  setFocus(undefined);
+                }}
+              >
+                {sites.map((s) => (
+                  <option key={s.id} value={s.id}>{s.domain}</option>
+                ))}
+              </select>
+            </>
+          )}
           <span className="status">
             <span className={`dot ${signedIn ? "ok" : "bad"}`} />
             {signedIn ? session?.username : "signed out"}
           </span>
           <a href="/settings/">Settings</a>
         </div>
-      </div>
+      </header>
 
       {error && <div className="banner error">{error}</div>}
 
       {session && !session.setupComplete && (
         <div className="banner warn">
-          This deployment has no admin account yet. <a href="/settings/">Finish setup</a> to protect it
-          before adding any API keys.
+          This deployment has no admin account yet. <a href="/settings/">Finish setup</a> to protect
+          it before adding any API keys.
         </div>
       )}
 
       {session?.setupComplete && !signedIn && (
         <div className="banner">
-          {session.publicReads
-            ? "Viewing read-only. "
-            : "This dashboard is private. "}
+          {session.publicReads ? "Viewing read-only. " : "This dashboard is private. "}
           <a href="/settings/">Sign in</a> to view your sites, run probes and manage API keys.
         </div>
       )}
 
-      <div className="section-title">Add a site</div>
-      <form onSubmit={addSite} className="card row">
-        <input
-          type="text"
-          placeholder="example.com"
-          value={domainInput}
-          onChange={(e) => setDomainInput(e.target.value)}
-          aria-label="Domain to track"
-          disabled={!signedIn}
-        />
-        <button type="submit" disabled={busy || !signedIn}>
-          {busy ? "Adding…" : "Add site"}
-        </button>
-      </form>
+      {signedIn && !sites.length && (
+        <form onSubmit={addSite} className="card row">
+          <input
+            value={domainInput}
+            onChange={(e) => setDomainInput(e.target.value)}
+            placeholder="example.com"
+            aria-label="Domain to track"
+          />
+          <button disabled={busy}>{busy ? "Adding…" : "Add your first site"}</button>
+        </form>
+      )}
 
-      {sites.length > 0 && (
+      {activeSite && (
         <>
-          <div className="section-title">Your sites</div>
-          <div className="grid">
-            {sites.map((s) => (
-              <div
-                key={s.id}
-                className="card"
-                style={{
-                  cursor: "pointer",
-                  borderColor: activeSite?.id === s.id ? "var(--accent)" : "var(--border)",
+          <FilterPanel filters={filters} onChange={setFilters} />
+          <SceneStage data={sceneData} onSelect={onSelectNode} />
+
+          <nav className="tabs" id="records" aria-label="Records">
+            {TABS.map((t) => (
+              <button
+                key={t.key}
+                type="button"
+                className={tab === t.key ? "tab-on" : "tab-off"}
+                aria-current={tab === t.key ? "page" : undefined}
+                onClick={() => {
+                  setTab(t.key);
+                  setFocus(undefined);
                 }}
-                onClick={() => setActiveSite(s)}
               >
-                <div className="row" style={{ justifyContent: "space-between" }}>
-                  <div>
-                    <div style={{ fontWeight: 600 }}>{s.domain}</div>
-                    <div className="meta">Added {new Date(s.created_at).toLocaleDateString()}</div>
-                  </div>
-                  {signedIn && (
-                    <button
-                      className="danger"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void removeSite(s.id);
-                      }}
-                    >
-                      Remove
-                    </button>
-                  )}
-                </div>
-              </div>
+                {t.label}
+              </button>
             ))}
-          </div>
+          </nav>
+
+          <section className="panel">
+            {tab === "overview" && summary && (
+              <OverviewPanel summary={summary} keywords={filtered.keywords} />
+            )}
+            {tab === "keywords" && <KeywordsPanel rows={filtered.keywords} focus={focus} />}
+            {tab === "geo" && <GeoPromptsPanel rows={filtered.prompts} focus={focus} />}
+            {tab === "backlinks" && <BacklinksPanel rows={filtered.backlinks} focus={focus} />}
+            {tab === "reviews" && <ReviewsPanel rows={reviews} />}
+            {tab === "citations" && <CitationsPanel rows={filtered.citations} focus={focus} />}
+            {tab === "regional" && (
+              <WorldMap data={regional} selected={country} onSelectCountry={setCountry} />
+            )}
+            {tab === "clone" && <ClonePanel siteId={activeSite.id} canRun={signedIn} />}
+            {tab === "debrief" && (
+              <DebriefPanel siteId={activeSite.id} country={country ?? undefined} />
+            )}
+          </section>
         </>
       )}
 
-      {activeSite && summary && (
-        <>
-          <div className="section-title">Overview · {activeSite.domain}</div>
-          <div className="grid">
-            <Stat title="SEO · Keywords" value={summary.seo.n} meta={`${summary.seo.clicks} clicks · ${summary.seo.impressions} impressions`} />
-            <Stat
-              title="SEO · Avg position"
-              value={summary.seo.avg_position ? summary.seo.avg_position.toFixed(1) : "—"}
-              meta="Lower is better"
-            />
-            <Stat
-              title="GEO · LLM visibility"
-              value={`${summary.geo.visibility}%`}
-              meta={`${summary.geo.cited} of ${summary.geo.n} prompts cited`}
-            />
-            <Stat title="Backlinks" value={summary.backlinks.live} meta={`${summary.backlinks.lost} lost`} />
-            <Stat
-              title="Citations"
-              value={summary.citations.n}
-              meta={summary.citations.authority ? `avg authority ${Math.round(summary.citations.authority)}` : "Run a sync"}
-            />
-            <Stat
-              title="Reviews"
-              value={summary.reviews.n}
-              meta={
-                summary.reviews.sentiment != null
-                  ? `sentiment ${summary.reviews.sentiment.toFixed(2)}`
-                  : "Connector pending"
-              }
-            />
-          </div>
-          <div className="card" style={{ marginTop: 16 }}>
-            <div className="row" style={{ justifyContent: "space-between" }}>
-              <div>Refreshing every 15s</div>
-              <div className="meta">Last update: {lastUpdate}</div>
-            </div>
-          </div>
-        </>
-      )}
-
-      <div className="footer">
-        {health?.dialect === "sqlite"
-          ? "Cloudflare Pages · D1 · KV"
-          : "Self-hosted · Next.js · Hono · PostgreSQL · Redis"}
-      </div>
+      <footer className="footer">
+        Updates every 20s · {sites.length} site{sites.length === 1 ? "" : "s"} tracked
+      </footer>
     </main>
-  );
-}
-
-function Stat({ title, value, meta }: { title: string; value: string | number; meta: string }) {
-  return (
-    <div className="card">
-      <h3>{title}</h3>
-      <div className="value">{value}</div>
-      <div className="meta">{meta}</div>
-    </div>
   );
 }
