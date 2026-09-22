@@ -291,6 +291,8 @@ require a session unless `PUBLIC_READS=1`.
 
 ## The dashboard
 
+See **[docs/SCREENSHOTS.md](./docs/SCREENSHOTS.md)** for a full walkthrough with screenshots of every panel.
+
 The top of the page is a live 3D scene; the records that feed it sit directly
 beneath, and a filter applies to both at once.
 
