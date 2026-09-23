@@ -93,7 +93,17 @@ export async function api<T = any>(path: string, init: RequestInit = {}): Promis
     headers[BYOK_HEADER] = btoa(JSON.stringify(byok));
   }
 
-  const res = await fetch(path, { ...init, method, headers, credentials: "same-origin" });
+  // A dropped connection or DNS hiccup throws before any response exists.
+  // Retried once, and only for GET — a mutating request must never be
+  // silently replayed, since the server may already have applied it.
+  let res: Response;
+  try {
+    res = await fetch(path, { ...init, method, headers, credentials: "same-origin" });
+  } catch (err) {
+    if (method !== "GET") throw err;
+    await new Promise((r) => setTimeout(r, 400));
+    res = await fetch(path, { ...init, method, headers, credentials: "same-origin" });
+  }
 
   if (res.status === 204) return undefined as T;
 

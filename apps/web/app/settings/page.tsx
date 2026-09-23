@@ -64,7 +64,17 @@ export default function SettingsPage() {
   if (!session) {
     return (
       <main className="container">
-        <div className="card auth-card">Loading…</div>
+        <div className="card auth-card stack">
+          <div>{error ? "Could not reach the server." : "Loading…"}</div>
+          {error && (
+            <>
+              <div className="hint">{error}</div>
+              <button type="button" onClick={() => { setError(null); void refresh(); }}>
+                Retry
+              </button>
+            </>
+          )}
+        </div>
       </main>
     );
   }
