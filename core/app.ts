@@ -23,6 +23,7 @@ import {
   deleteSecret,
   hasEncryptionKey,
   isCredentialName,
+  isDemoMode,
   listSecrets,
   setSecret,
 } from "./secrets.ts";
@@ -50,6 +51,9 @@ import type { DebriefScope, LlmModel, RegionalMetricName } from "./types";
 
 export type Vars = { ctx: Ctx; session: Session | null };
 export type App = Hono<{ Variables: Vars }>;
+
+/** Header carrying caller-supplied credentials (base64 JSON). */
+export const BYOK_HEADER = "x-byok";
 
 class HttpError extends Error {
   status: number;
@@ -82,6 +86,37 @@ function clientId(c: Context): string {
   );
 }
 
+/**
+ * Reads caller-supplied credentials from the request.
+ *
+ * Sent as base64-encoded JSON in one header so it works uniformly across
+ * every endpoint. The value is returned, used for this request, and dropped —
+ * it is never stored, and it is deliberately never included in any log line
+ * or error message.
+ */
+function parseByok(c: Context): Record<string, string> | undefined {
+  const header = c.req.header(BYOK_HEADER);
+  if (!header) return undefined;
+  try {
+    const decoded = JSON.parse(atob(header));
+    if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) return undefined;
+
+    const out: Record<string, string> = {};
+    for (const [name, value] of Object.entries(decoded)) {
+      // Only known credential names, so this cannot become a channel for
+      // injecting arbitrary configuration.
+      if (isCredentialName(name) && typeof value === "string" && value.trim()) {
+        out[name] = value.trim();
+      }
+    }
+    return Object.keys(out).length ? out : undefined;
+  } catch {
+    // A malformed header is ignored rather than failing the request, so a
+    // stale value in a browser tab cannot lock someone out.
+    return undefined;
+  }
+}
+
 async function readJson(c: Context): Promise<any> {
   try {
     return (await c.req.json()) ?? {};
@@ -103,7 +138,9 @@ export function createApp(resolveCtx: (c: Context) => Ctx): App {
   /* ---------- Context and session resolution ---------- */
 
   app.use("*", async (c, next) => {
-    c.set("ctx", resolveCtx(c));
+    // A fresh object per request: the Node build reuses one long-lived Ctx,
+    // and mutating it would leak one caller's key into the next request.
+    c.set("ctx", { ...resolveCtx(c), byok: parseByok(c) });
     const token = readCookie(c.req.header("cookie"), SESSION_COOKIE);
     try {
       c.set("session", await getSession(c.get("ctx"), token));
@@ -131,6 +168,9 @@ export function createApp(resolveCtx: (c: Context) => Ctx): App {
    */
   const PUBLIC_PATHS = [/^\/api\/health$/, /^\/api\/auth\//, /^\/api\/admin\/migrate$/];
 
+  /** The only write a demo visitor may perform, and only with their own key. */
+  const DEMO_WRITABLE = /^\/api\/sites\/\d+\/prompts$/;
+
   /**
    * Reads are authenticated by default.
    *
@@ -143,15 +183,40 @@ export function createApp(resolveCtx: (c: Context) => Ctx): App {
     const path = new URL(c.req.url).pathname;
     if (PUBLIC_PATHS.some((p) => p.test(path))) return next();
 
+    const ctx = c.get("ctx");
     const session = c.get("session") as Session | null;
-    const publicReads = c.get("ctx").env.PUBLIC_READS === "1";
+    const demo = isDemoMode(ctx);
+    const publicReads = demo || ctx.env.PUBLIC_READS === "1";
     const safe = ["GET", "HEAD", "OPTIONS"].includes(c.req.method);
+
+    // A demo visitor may run a probe without signing in, but only with a key
+    // they supplied themselves — there is no deployment key to fall back on.
+    const demoProbe = demo && DEMO_WRITABLE.test(path) && c.req.method === "POST";
+    if (demoProbe) {
+      if (!ctx.byok || !Object.keys(ctx.byok).length) {
+        throw new HttpError(400, "add your own API key to run a probe on the demo");
+      }
+      return next();
+    }
 
     if (!session && !(safe && publicReads)) throw new HttpError(401, "sign in required");
     await next();
   });
 
   const requireAuth = async (c: Context, next: () => Promise<void>) => {
+    const ctx = c.get("ctx");
+    const path = new URL(c.req.url).pathname;
+
+    if (isDemoMode(ctx)) {
+      // The probe is the one demo write, already gated above on a supplied
+      // key. Everything else that mutates is off.
+      if (DEMO_WRITABLE.test(path) && c.req.method === "POST") return next();
+      if (!["GET", "HEAD", "OPTIONS"].includes(c.req.method)) {
+        throw new HttpError(403, "this is a read-only public demo");
+      }
+      return next();
+    }
+
     const session = c.get("session") as Session | null;
     if (!session) throw new HttpError(401, "sign in required");
     if (!SAFE_METHODS.has(c.req.method) && !verifyCsrf(session, c.req.header(CSRF_HEADER))) {
@@ -176,6 +241,7 @@ export function createApp(resolveCtx: (c: Context) => Ctx): App {
       db,
       dialect: ctx.db.dialect,
       encryptionConfigured: hasEncryptionKey(ctx),
+      demo: isDemoMode(ctx),
     });
   });
 
@@ -209,7 +275,8 @@ export function createApp(resolveCtx: (c: Context) => Ctx): App {
       setupComplete,
       // Lets the setup form ask for a token only when one is required.
       setupTokenRequired: Boolean(ctx.env.SETUP_TOKEN?.trim()),
-      publicReads: ctx.env.PUBLIC_READS === "1",
+      publicReads: isDemoMode(ctx) || ctx.env.PUBLIC_READS === "1",
+      demo: isDemoMode(ctx),
       authenticated: Boolean(session),
       username: session?.username ?? null,
       // The CSRF token is only useful to a client that already holds the
@@ -338,7 +405,7 @@ export function createApp(resolveCtx: (c: Context) => Ctx): App {
   app.post("/api/sites/:id/prompts", requireAuth, async (c) => {
     const ctx = c.get("ctx");
     const id = siteId(c);
-    const { prompt, models } = await readJson(c);
+    const { prompt, models, domain } = await readJson(c);
     if (typeof prompt !== "string" || !prompt.trim()) throw new HttpError(400, "prompt is required");
     if (models !== undefined && !Array.isArray(models)) throw new HttpError(400, "models must be an array");
 
@@ -347,10 +414,12 @@ export function createApp(resolveCtx: (c: Context) => Ctx): App {
         siteId: id,
         prompt: prompt.trim(),
         models: models as LlmModel[] | undefined,
+        // Honoured only where the probe is not persisted, i.e. the demo.
+        domain: typeof domain === "string" ? domain : undefined,
       });
       return c.json({ runId: `run_${Date.now().toString(36)}`, siteId: id, prompt: prompt.trim(), results }, 201);
     } catch (e: any) {
-      if (/no models enabled|unknown model/.test(e.message)) throw new HttpError(400, e.message);
+      if (/no models enabled|unknown model|must look like/.test(e.message)) throw new HttpError(400, e.message);
       if (/not found/.test(e.message)) throw new HttpError(404, e.message);
       throw e;
     }

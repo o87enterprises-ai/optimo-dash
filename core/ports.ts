@@ -37,6 +37,15 @@ export type Ctx = {
   bus: Bus;
   /** Deployment-level configuration (ENCRYPTION_KEY, PBKDF2_ITERATIONS, ...). */
   env: Record<string, string | undefined>;
+  /**
+   * Credentials supplied by the caller for this one request — "bring your own
+   * key". They are read straight from the request, used, and discarded: never
+   * written to the database, never logged, never visible to another request.
+   *
+   * This object must be built per request. Sharing one across requests would
+   * leak one caller's key into another's.
+   */
+  byok?: Record<string, string>;
 };
 
 /* ---------- Portable SQL helpers ---------- */

@@ -165,3 +165,6 @@ select { width: auto; }
   .header .row { width: 100%; justify-content: flex-start; }
   #site-switcher { max-width: 55vw; }
 }
+.byok-result { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+.byok-result p { margin: 6px 0 0; }
+.demo-banner { border-color: var(--accent); background: rgba(78,161,255,0.08); }

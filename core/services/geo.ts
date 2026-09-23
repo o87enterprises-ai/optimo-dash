@@ -1,7 +1,7 @@
 import type { Ctx } from "../ports.ts";
 import { now, toBool } from "../ports.ts";
 import { detectCitation } from "../citation.ts";
-import { getSecret } from "../secrets.ts";
+import { getSecret, isDemoMode } from "../secrets.ts";
 import type { LlmModel, ProbeResult } from "../types";
 
 /**
@@ -18,6 +18,11 @@ import type { LlmModel, ProbeResult } from "../types";
  */
 
 const CACHE_TTL_SECONDS = 60 * 60 * 24;
+
+/** Reduces user input to a bare hostname for citation matching. */
+function normalizeDomain(input: string): string {
+  return input.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "").replace(/^www\./, "");
+}
 const MIN_REQUEST_GAP_MS = 1000;
 const MAX_ATTEMPTS = 4;
 
@@ -160,12 +165,23 @@ async function cacheKey(prompt: string, model: string): Promise<string> {
 
 export async function probeLLM(
   ctx: Ctx,
-  opts: { siteId: number; prompt: string; models?: LlmModel[] }
+  opts: { siteId: number; prompt: string; models?: LlmModel[]; domain?: string }
 ): Promise<ProbeResult[]> {
+  // On the public demo a probe is ephemeral: the visitor's prompt is their
+  // business, and a shared database would show it to whoever browses next.
+  const persist = !isDemoMode(ctx);
   const site = await ctx.db.first<{ domain: string }>("SELECT domain FROM sites WHERE id = ?", [
     opts.siteId,
   ]);
   if (!site) throw new Error(`site ${opts.siteId} not found`);
+
+  /**
+   * A demo visitor may check a domain of their own rather than the sample
+   * site — that is the point of letting them bring a key. Accepted only where
+   * nothing is written, so it cannot corrupt a real site's history.
+   */
+  const target = !persist && opts.domain ? normalizeDomain(opts.domain) : site.domain;
+  if (!target.includes(".")) throw new Error("domain must look like example.com");
 
   const requested = opts.models?.length ? opts.models : ALL_MODELS;
   const unknown = requested.filter((m) => !PROVIDERS[m]);
@@ -206,20 +222,24 @@ export async function probeLLM(
       continue;
     }
 
-    const { cited, excerpt } = detectCitation(answer, site.domain);
+    const { cited, excerpt } = detectCitation(answer, target);
 
-    await ctx.db.run(
-      `INSERT INTO geo_prompts (site_id, prompt, model, cited, excerpt, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT (site_id, prompt, model)
-       DO UPDATE SET cited = excluded.cited, excerpt = excluded.excerpt, updated_at = excluded.updated_at`,
-      [opts.siteId, opts.prompt, model, cited ? 1 : 0, excerpt, now()]
-    );
+    if (persist) {
+      await ctx.db.run(
+        `INSERT INTO geo_prompts (site_id, prompt, model, cited, excerpt, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (site_id, prompt, model)
+         DO UPDATE SET cited = excluded.cited, excerpt = excluded.excerpt, updated_at = excluded.updated_at`,
+        [opts.siteId, opts.prompt, model, cited ? 1 : 0, excerpt, now()]
+      );
+    }
 
     results.push({ model, cited, excerpt, cached });
   }
 
-  await ctx.bus.publish({ kind: "geo_prompts", siteId: opts.siteId, payload: { prompt: opts.prompt, results } });
+  if (persist) {
+    await ctx.bus.publish({ kind: "geo_prompts", siteId: opts.siteId, payload: { prompt: opts.prompt, results } });
+  }
   return results;
 }
 

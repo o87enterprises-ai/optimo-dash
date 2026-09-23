@@ -80,7 +80,7 @@ export default function SettingsPage() {
         </div>
         <nav className="nav">
           <a href="/">← Dashboard</a>
-          {session.authenticated && (
+          {!session.demo && session.authenticated && (
             <button
               className="secondary"
               onClick={async () => {
@@ -98,15 +98,23 @@ export default function SettingsPage() {
       {error && <div className="banner error">{error}</div>}
       {notice && <div className="banner ok">{notice}</div>}
 
-      {!session.migrated && <MigrateNotice onDone={refresh} />}
+      {session.demo && (
+        <div className="banner demo-banner">
+          <strong>Public demo.</strong> This deployment stores no API keys, so there is nothing to
+          configure here. Use the <a href="/">dashboard</a> and bring your own key to run a live
+          check — it stays in your browser and is never sent to storage.
+        </div>
+      )}
 
-      {session.migrated && !session.setupComplete && <SetupForm onDone={refresh} setError={setError} tokenRequired={session.setupTokenRequired} />}
+      {!session.demo && !session.migrated && <MigrateNotice onDone={refresh} />}
 
-      {session.migrated && session.setupComplete && !session.authenticated && (
+      {!session.demo && session.migrated && !session.setupComplete && <SetupForm onDone={refresh} setError={setError} tokenRequired={session.setupTokenRequired} />}
+
+      {!session.demo && session.migrated && session.setupComplete && !session.authenticated && (
         <LoginForm onDone={refresh} setError={setError} />
       )}
 
-      {session.authenticated && (
+      {!session.demo && session.authenticated && (
         <>
           {!encryptionConfigured && (
             <div className="banner warn">

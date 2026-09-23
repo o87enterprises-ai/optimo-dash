@@ -167,6 +167,27 @@ The dashboard holds live API keys, so it is protected by default.
 - **First-run race.** With `SETUP_TOKEN` set, creating the admin account
   requires it, so a stranger who finds a fresh deployment cannot claim it.
 
+### Public demo mode
+
+`DEMO_MODE=1` turns a deployment into a public demo that cannot spend the
+operator's money:
+
+- `getSecret` returns nothing for any stored or environment credential, so
+  there is **no code path from an anonymous visitor to your keys**. Enforced
+  at the single function every connector reads through, not at each call site.
+- Reads are open; the only write allowed is an LLM probe, and only when the
+  caller supplies their own key.
+- A visitor's key travels in an `x-byok` header, is used for that one request
+  and discarded. It is never written to the database, so the next visitor
+  cannot reuse it either. In the browser it lives in `sessionStorage` and dies
+  with the tab.
+- Demo probes are not persisted, so one visitor's prompts never show up in
+  another's view. A visitor may point a probe at any domain they like.
+- Storing credentials, adding sites, syncs and clone reports are all refused.
+
+Run the demo as a **separate deployment** from your real one. Same code, its
+own D1, `DEMO_MODE=1`, and `scripts/seed-demo.sql` for sample data.
+
 ---
 
 ## Environment variables

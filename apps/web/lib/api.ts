@@ -13,10 +13,57 @@ export type SessionState = {
   setupComplete: boolean;
   setupTokenRequired: boolean;
   publicReads: boolean;
+  demo: boolean;
   authenticated: boolean;
   username: string | null;
   csrfToken: string | null;
 };
+
+/**
+ * Caller-supplied API keys ("bring your own key").
+ *
+ * Held in sessionStorage so they die with the tab, and sent as a request
+ * header. They are never written to the server's database — on the public
+ * demo that is the only way to run a probe, because the deployment's own
+ * credentials are unreachable there.
+ */
+const BYOK_STORAGE = "sag_byok";
+export const BYOK_HEADER = "x-byok";
+
+export type ByokKeys = Record<string, string>;
+
+export function readByok(): ByokKeys {
+  if (typeof window === "undefined") return {};
+  try {
+    return JSON.parse(window.sessionStorage.getItem(BYOK_STORAGE) ?? "{}") as ByokKeys;
+  } catch {
+    return {};
+  }
+}
+
+export function writeByok(keys: ByokKeys): void {
+  try {
+    const cleaned = Object.fromEntries(
+      Object.entries(keys).filter(([, v]) => typeof v === "string" && v.trim())
+    );
+    if (Object.keys(cleaned).length) {
+      window.sessionStorage.setItem(BYOK_STORAGE, JSON.stringify(cleaned));
+    } else {
+      window.sessionStorage.removeItem(BYOK_STORAGE);
+    }
+  } catch {
+    // Private browsing can refuse storage; the keys then last for this page
+    // view only, which is an acceptable degradation.
+  }
+}
+
+export function clearByok(): void {
+  try {
+    window.sessionStorage.removeItem(BYOK_STORAGE);
+  } catch {
+    /* nothing to clear */
+  }
+}
 
 let csrfToken: string | null = null;
 
@@ -39,6 +86,12 @@ export async function api<T = any>(path: string, init: RequestInit = {}): Promis
     ...((init.headers as Record<string, string>) ?? {}),
   };
   if (method !== "GET" && csrfToken) headers["x-csrf-token"] = csrfToken;
+
+  // Attach any keys the visitor supplied, base64 so the header stays ASCII.
+  const byok = readByok();
+  if (Object.keys(byok).length) {
+    headers[BYOK_HEADER] = btoa(JSON.stringify(byok));
+  }
 
   const res = await fetch(path, { ...init, method, headers, credentials: "same-origin" });
 

@@ -10,6 +10,7 @@ import type { SceneNode } from "../lib/scene-data";
 import FilterPanel, { DEFAULT_FILTERS, withinRange } from "../components/FilterPanel";
 import type { Filters } from "../components/FilterPanel";
 import SceneStage from "../components/SceneStage";
+import ByokPanel from "../components/ByokPanel";
 import OverviewPanel from "../components/panels/OverviewPanel";
 import ClonePanel from "../components/panels/ClonePanel";
 import DebriefPanel from "../components/panels/DebriefPanel";
@@ -69,6 +70,7 @@ export default function Home() {
   const [regional, setRegional] = useState<{ countries: Record<string, any> }>({ countries: {} });
 
   const signedIn = session?.authenticated ?? false;
+  const demo = session?.demo ?? false;
   const activeSite = sites.find((s) => s.id === activeId) ?? null;
 
   const loadSites = useCallback(async () => {
@@ -198,10 +200,10 @@ export default function Home() {
             </>
           )}
           <span className="status">
-            <span className={`dot ${signedIn ? "ok" : "bad"}`} />
-            {signedIn ? session?.username : "signed out"}
+            <span className={`dot ${demo ? "ok" : signedIn ? "ok" : "bad"}`} />
+            {demo ? "demo" : signedIn ? session?.username : "signed out"}
           </span>
-          <a href="/settings/">Settings</a>
+          {!demo && <a href="/settings/">Settings</a>}
         </div>
       </header>
 
@@ -214,7 +216,16 @@ export default function Home() {
         </div>
       )}
 
-      {session?.setupComplete && !signedIn && (
+      {demo && (
+        <div className="banner demo-banner">
+          <strong>Public demo.</strong> The data below is a seeded sample, and this deployment
+          holds no API keys of its own — bring your own in the <em>GEO prompts</em> tab to run a
+          real check. Nothing you do here is saved.{" "}
+          <a href="https://github.com/o87enterprises-ai/optimo-dash">Source</a>
+        </div>
+      )}
+
+      {!demo && session?.setupComplete && !signedIn && (
         <div className="banner">
           {session.publicReads ? "Viewing read-only. " : "This dashboard is private. "}
           <a href="/settings/">Sign in</a> to view your sites, run probes and manage API keys.
@@ -260,7 +271,14 @@ export default function Home() {
               <OverviewPanel summary={summary} keywords={filtered.keywords} />
             )}
             {tab === "keywords" && <KeywordsPanel rows={filtered.keywords} focus={focus} />}
-            {tab === "geo" && <GeoPromptsPanel rows={filtered.prompts} focus={focus} />}
+            {tab === "geo" && (
+              <div className="stack">
+                {(demo || signedIn) && (
+                  <ByokPanel siteId={activeSite.id} domain={activeSite.domain} demo={demo} />
+                )}
+                <GeoPromptsPanel rows={filtered.prompts} focus={focus} />
+              </div>
+            )}
             {tab === "backlinks" && <BacklinksPanel rows={filtered.backlinks} focus={focus} />}
             {tab === "reviews" && <ReviewsPanel rows={reviews} />}
             {tab === "citations" && <CitationsPanel rows={filtered.citations} focus={focus} />}

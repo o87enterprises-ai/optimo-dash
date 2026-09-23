@@ -77,6 +77,15 @@ export function hasEncryptionKey(ctx: Ctx): boolean {
   return Boolean(ctx.env.ENCRYPTION_KEY?.trim());
 }
 
+/**
+ * Demo deployments are public. The operator's own credentials must therefore
+ * be unreachable — a visitor either brings their own key or the connector
+ * stays disabled. Enforced inside getSecret so no caller can bypass it.
+ */
+export function isDemoMode(ctx: Ctx): boolean {
+  return ctx.env.DEMO_MODE === "1";
+}
+
 type CredentialRow = { name: string; iv: string; ciphertext: string; masked: string; updated_at: string };
 
 /**
@@ -84,6 +93,15 @@ type CredentialRow = { name: string; iv: string; ciphertext: string; masked: str
  * present, otherwise the deployment environment.
  */
 export async function getSecret(ctx: Ctx, name: string): Promise<string | undefined> {
+  // A key supplied with this request always wins, and is never persisted.
+  const supplied = ctx.byok?.[name]?.trim();
+  if (supplied) return supplied;
+
+  // In demo mode the deployment's own credentials are simply not reachable.
+  // This is the whole security guarantee of the public demo: there is no code
+  // path from an anonymous visitor to the operator's stored or env keys.
+  if (isDemoMode(ctx)) return undefined;
+
   if (hasEncryptionKey(ctx)) {
     const row = await ctx.db.first<CredentialRow>(
       "SELECT name, iv, ciphertext, masked, updated_at FROM api_credentials WHERE name = ?",
@@ -104,6 +122,9 @@ export async function getSecret(ctx: Ctx, name: string): Promise<string | undefi
 
 /** Stores a credential, replacing any existing value for that name. */
 export async function setSecret(ctx: Ctx, name: CredentialName, plaintext: string): Promise<void> {
+  if (isDemoMode(ctx)) {
+    throw new Error("this is a public demo — keys are used for one request and never stored");
+  }
   const value = plaintext.trim();
   if (!value) throw new Error("value is required");
 
@@ -143,7 +164,9 @@ export type CredentialStatus = {
  */
 export async function listSecrets(ctx: Ctx): Promise<CredentialStatus[]> {
   const stored = new Map<string, CredentialRow>();
-  if (hasEncryptionKey(ctx)) {
+  // Demo mode reports every credential as unset, because that is what it is
+  // as far as any request can tell.
+  if (hasEncryptionKey(ctx) && !isDemoMode(ctx)) {
     const rows = await ctx.db.all<CredentialRow>(
       "SELECT name, iv, ciphertext, masked, updated_at FROM api_credentials"
     );
@@ -152,7 +175,7 @@ export async function listSecrets(ctx: Ctx): Promise<CredentialStatus[]> {
 
   return CREDENTIAL_NAMES.map((name) => {
     const row = stored.get(name);
-    const fromEnv = ctx.env[name]?.trim();
+    const fromEnv = isDemoMode(ctx) ? undefined : ctx.env[name]?.trim();
     const meta = CREDENTIAL_META[name];
 
     if (row) {
