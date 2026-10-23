@@ -1,6 +1,6 @@
 // Server-side AI access for the autopilot. Reuses the provider-agnostic layer shared with the GEO probes
 // (NVIDIA, Groq, Gemini, Ollama, any OpenAI-compatible endpoint), so any free key works.
-import { listProviders, Provider, ProviderStatus, resolveProvider } from "@llm/providers";
+import { ask, listProviders, Provider, ProviderStatus, resolveProvider } from "@llm/providers";
 import { briefError } from "./fallback";
 
 /** Providers a visitor may bring their own key for. The base URL always comes from the server, never the request. */
@@ -71,7 +71,7 @@ export function pickProvider(req: Request, body: { provider?: unknown; apiKey?: 
   return chosen;
 }
 
-export type Ready = { provider: Provider; model: string; status: ProviderStatus };
+export type Ready = { provider: Provider; model: string; status: ProviderStatus; note?: string };
 
 /** One provider that is ready to use: the one requested, or the first ready one. */
 export async function selectProvider(req: Request, body: { provider?: unknown; apiKey?: unknown; model?: unknown }): Promise<Ready> {
@@ -99,10 +99,59 @@ export async function readyProviders(req: Request): Promise<Ready[]> {
 
 /** What to try, in order: just the requested provider, or every ready one so a failing one can be skipped. */
 export async function candidates(req: Request, body: { provider?: unknown; apiKey?: unknown; model?: unknown }): Promise<Ready[]> {
-  if (pickProvider(req, body)) return [await selectProvider(req, body)];
+  const named = !!(typeof body.model === "string" && body.model);
+  if (pickProvider(req, body)) return [await settle(await selectProvider(req, body), named)];
   const all = await readyProviders(req);
   if (!all.length) throw new AiError(409, "No AI provider is available. Add a free key for NVIDIA, Groq or Gemini.");
-  return all;
+  return Promise.all(all.map((r) => settle(r, false)));
+}
+
+/* ---------- a default model that is gone (retired, or not enabled for this account) ---------- */
+
+const PROBE_S = 15;
+const SIZE_OK = /(^|[^\d])(7|8|9|12|14|20|24|27|32|49|70)b/i;
+const TOO_BIG = /\b(1\d\d|2\d\d|[3-9]\d\d)b\b|ultra|thinking|reasoning|r1|-r\d/i;
+const settled = new Map<string, { model: string; note?: string; at: number }>();
+
+const probe = (p: Provider, model: string) =>
+  Promise.race([
+    ask(p, model, "Reply with exactly the word OK.", { grounded: false, maxTokens: 10, temperature: 0 }),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`no answer in ${PROBE_S} s`)), PROBE_S * 1000)),
+  ]);
+
+/** Small, general-purpose chat models first: they answer fastest and are the likeliest to be enabled on a free key. */
+export function rankModels(names: string[], skip: string): string[] {
+  const score = (n: string) => (/instruct|-it\b|chat|flash|mini|small/i.test(n) ? 2 : 0) + (SIZE_OK.test(n) ? 2 : 0);
+  return names.filter((n) => n !== skip && !TOO_BIG.test(n)).sort((a, b) => score(b) - score(a) || a.localeCompare(b));
+}
+
+/**
+ * Check that the provider's default model answers. When it does not exist for this key (HTTP 404/410), look for
+ * one that does, so a retired or unavailable default never blocks the flow. A model the person typed is left alone,
+ * as are local providers and any failure that is not "model missing" (bad key, rate limit, outage).
+ */
+export async function settle(r: Ready, named: boolean): Promise<Ready> {
+  if (named || r.provider.local) return r;
+  const key = `${r.provider.id}|${(r.provider.apiKey ?? "").slice(-8)}|${r.model}`;
+  const hit = settled.get(key);
+  if (hit && Date.now() - hit.at < 10 * 60_000) return { ...r, model: hit.model, note: hit.note };
+  const remember = (model: string, note?: string) => {
+    settled.set(key, { model, note, at: Date.now() });
+    return { ...r, model, note };
+  };
+  try {
+    await probe(r.provider, r.model);
+    return remember(r.model);
+  } catch (e: any) {
+    if (!/HTTP (404|410)\b/.test(String(e?.message))) return r;
+  }
+  try {
+    const options = rankModels(await listModels(r.provider), r.model).slice(0, 8);
+    const found = await Promise.any(options.map(async (m) => (await probe(r.provider, m), m)));
+    return remember(found, `${r.model} is not available for this key, so ${found} is used instead`);
+  } catch {
+    return r;
+  }
 }
 
 const NOT_CHAT = /embed|rerank|reward|whisper|tts|moderation|guard|image|clip|vision|speech|asr/i;
