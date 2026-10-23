@@ -115,6 +115,8 @@ test("ai: copy is validated before it is accepted", () => {
   assert.equal(invented.title, "Dental Services | Brightside Dental");
   assert.match(checkCopy(req, "sorry, I cannot help").error!, /JSON/);
   assert.equal(validateCopy("title", "Too short", ""), "title must be 15-60 characters (got 9)");
+  assert.match(validateCopy("title", "About Brightside Dental | Brightside Dental", "") ?? "", /repeats/);
+  assert.equal(validateCopy("title", "Dental Services | Brightside Dental", ""), null);
   assert.equal(parseCopyJson("no json here"), null);
 });
 

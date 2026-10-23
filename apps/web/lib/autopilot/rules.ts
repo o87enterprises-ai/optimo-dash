@@ -216,6 +216,10 @@ export function validateCopy(field: "title" | "description", text: string, sourc
   if (field === "description" && (t.length < LIMITS.descMin || t.length > LIMITS.descMax)) {
     return `description must be ${LIMITS.descMin}-${LIMITS.descMax} characters (got ${t.length})`;
   }
+  if (field === "title") {
+    const parts = t.split(/\s[|\-–—·:]\s/).map((x) => x.trim().toLowerCase()).filter((x) => x.length >= 3);
+    if (parts.some((a, i) => parts.some((b, j) => i !== j && a.includes(b)))) return "title repeats a name or phrase";
+  }
   const hay = source.toLowerCase();
   for (const fact of t.match(FACTS) ?? []) {
     if (!hay.includes(fact.toLowerCase().replace(/[.,]+$/, ""))) return `introduces "${fact}", which is not on the page`;
