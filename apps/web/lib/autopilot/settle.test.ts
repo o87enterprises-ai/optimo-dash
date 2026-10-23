@@ -59,5 +59,5 @@ test("when nothing answers the original model is kept so the real error shows", 
 });
 
 test("rankModels prefers small instruct models and drops huge ones", () => {
-  assert.deepEqual(rankModels(["big-405b-instruct", "a-8b-instruct", "zzz", "gone"], "gone"), ["a-8b-instruct", "zzz"]);
+  assert.deepEqual(rankModels(["big-405b-instruct", "a-8b-instruct", "zzz", "gone", "granite-8b-code-instruct"], "gone"), ["a-8b-instruct", "zzz"]);
 });

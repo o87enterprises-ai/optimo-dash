@@ -110,9 +110,12 @@ export async function candidates(req: Request, body: { provider?: unknown; apiKe
 
 const PROBE_S = 10;
 const BATCH = 8;
-const BATCHES = 3;
+const BATCHES = 8;
+const SEARCH_S = 35;
 const SIZE_OK = /(^|[^\d])(7|8|9|12|14|20|24|27|32|49|70)b/i;
 const TOO_BIG = /\b(1\d\d|2\d\d|[3-9]\d\d)b\b|ultra|thinking|reasoning|r1|-r\d/i;
+// specialist models (code, translation, retrieval, medical, finance...) are poor at page copy
+const SPECIALIST = /code|coder|translate|chatqa|parse|\bmed|fin\b|nemoguard|safety|content-safety|topic-control|embed/i;
 const settled = new Map<string, { model: string; note?: string; at: number }>();
 
 const probe = (p: Provider, model: string) =>
@@ -124,7 +127,7 @@ const probe = (p: Provider, model: string) =>
 /** Small, general-purpose chat models first: they answer fastest and are the likeliest to be enabled on a free key. */
 export function rankModels(names: string[], skip: string): string[] {
   const score = (n: string) => (/instruct|-it\b|chat|flash|mini|small/i.test(n) ? 2 : 0) + (SIZE_OK.test(n) ? 2 : 0);
-  return names.filter((n) => n !== skip && !TOO_BIG.test(n)).sort((a, b) => score(b) - score(a) || a.localeCompare(b));
+  return names.filter((n) => n !== skip && !TOO_BIG.test(n) && !SPECIALIST.test(n)).sort((a, b) => score(b) - score(a) || a.localeCompare(b));
 }
 
 /**
@@ -154,7 +157,10 @@ export async function settle(r: Ready, named: boolean): Promise<Ready> {
     return r;
   }
   const errors: string[] = [];
-  for (let i = 0; i < options.length; i += BATCH) {
+  const stopAt = Date.now() + SEARCH_S * 1000;
+  let tried = 0;
+  for (let i = 0; i < options.length && Date.now() < stopAt; i += BATCH) {
+    tried += options.slice(i, i + BATCH).length;
     try {
       const found = await Promise.any(
         options.slice(i, i + BATCH).map(async (m) => {
@@ -170,7 +176,7 @@ export async function settle(r: Ready, named: boolean): Promise<Ready> {
       return remember(found, `${r.model} is not available for this key, so ${found} is used instead`);
     } catch {}
   }
-  return { ...r, note: `${r.model} is not available for this key, and none of the ${options.length} other models tried answered (${briefError(errors[0] ?? "no reason given")})` };
+  return { ...r, note: `${r.model} is not available for this key, and none of the ${tried} other models tried answered (${briefError(errors[0] ?? "no reason given")})` };
 }
 
 const NOT_CHAT = /embed|rerank|reward|whisper|tts|moderation|guard|image|clip|vision|speech|asr/i;
