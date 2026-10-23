@@ -44,7 +44,7 @@ export async function POST(req: Request) {
       pages,
       async (id, page) => {
         const { provider, model } = byId.get(id)!;
-        const a = await ask(provider, model, buildCopyPrompt(page), { system: COPY_SYSTEM, grounded: false, temperature: 0.3, maxTokens: 400 });
+        const a = await ask(provider, model, buildCopyPrompt(page), { system: COPY_SYSTEM, grounded: false, temperature: 0.3, maxTokens: 1500 });
         return a.text;
       }
     );

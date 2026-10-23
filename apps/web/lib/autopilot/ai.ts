@@ -33,7 +33,8 @@ export function buildCopyPrompt(r: CopyRequest): string {
 
 /** Pull the first JSON object out of a model reply, tolerating code fences and chatter. */
 export function parseCopyJson(text: string): Record<string, unknown> | null {
-  const cleaned = text.replace(/```(?:json)?/gi, "");
+  // reasoning models put their working in <think> blocks (sometimes never closed when the reply is cut off)
+  const cleaned = text.replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, "").replace(/<think(?:ing)?>[\s\S]*$/i, "").replace(/```(?:json)?/gi, "");
   const start = cleaned.indexOf("{");
   const end = cleaned.lastIndexOf("}");
   if (start < 0 || end <= start) return null;
@@ -51,7 +52,10 @@ export const factSource = (r: CopyRequest) =>
 
 export function checkCopy(r: CopyRequest, raw: string): CopyResult {
   const json = parseCopyJson(raw);
-  if (!json) return { path: r.path, error: "the model did not return JSON" };
+  if (!json) {
+    const seen = raw.replace(/\s+/g, " ").trim().slice(0, 80);
+    return { path: r.path, error: `the model did not return JSON${seen ? ` (it said: "${seen}")` : " (empty reply)"}` };
+  }
   const out: CopyResult = { path: r.path };
   const problems: string[] = [];
   for (const w of r.wants) {

@@ -118,6 +118,10 @@ test("ai: copy is validated before it is accepted", () => {
   assert.match(validateCopy("title", "About Brightside Dental | Brightside Dental", "") ?? "", /repeats/);
   assert.equal(validateCopy("title", "Dental Services | Brightside Dental", ""), null);
   assert.equal(parseCopyJson("no json here"), null);
+  assert.deepEqual(parseCopyJson('<think>maybe {"title": "x"} hmm</think>\n{"title":"Real title here for page"}'), { title: "Real title here for page" });
+  assert.equal(parseCopyJson('<think>still working on {"title":'), null);
+  assert.match(checkCopy(req, "").error!, /empty reply/);
+  assert.match(checkCopy(req, "Sure! Here you go").error!, /it said: "Sure! Here you go"/);
 });
 
 test("ai: accepted copy replaces rules copy and flows into the social tags", async () => {
