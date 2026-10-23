@@ -120,6 +120,8 @@ test("ai: copy is validated before it is accepted", () => {
   assert.equal(parseCopyJson("no json here"), null);
   assert.deepEqual(parseCopyJson('<think>maybe {"title": "x"} hmm</think>\n{"title":"Real title here for page"}'), { title: "Real title here for page" });
   assert.equal(parseCopyJson('<think>still working on {"title":'), null);
+  assert.deepEqual(parseCopyJson('Format: {title}. Answer: {"title":"Real title here for page"} {:}'), { title: "Real title here for page" });
+  assert.deepEqual(parseCopyJson('<reasoning>x {y}</reasoning>{"a":{"b":1}}'), { a: { b: 1 } });
   assert.match(checkCopy(req, "").error!, /empty reply/);
   assert.match(checkCopy(req, "Sure! Here you go").error!, /it said: "Sure! Here you go"/);
 });
