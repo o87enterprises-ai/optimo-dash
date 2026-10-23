@@ -209,9 +209,15 @@ export async function undo(repo: RepoProvider, n: number, now = new Date()): Pro
   return { pr: out, applied: files.map((f) => f.path), skipped };
 }
 
-export type HistoryItem = PullRequest & { kind: "change" | "undo" };
+export type HistoryItem = PullRequest & { kind: "change" | "undo"; undoneBy?: number };
 
 export async function history(repo: RepoProvider): Promise<HistoryItem[]> {
   const prs = await repo.listPRs(BRANCH_PREFIX);
-  return prs.map((p) => ({ ...p, kind: p.branch.startsWith(`${BRANCH_PREFIX}undo-`) ? "undo" : "change" }));
+  // a merged undo branch is named optimo/undo-<n>-<stamp>, where n is the change it reverted
+  const undoneBy = new Map<number, number>();
+  for (const p of prs) {
+    const m = p.merged ? new RegExp(`^${BRANCH_PREFIX}undo-(\\d+)-`).exec(p.branch) : null;
+    if (m) undoneBy.set(Number(m[1]), p.number);
+  }
+  return prs.map((p) => ({ ...p, kind: p.branch.startsWith(`${BRANCH_PREFIX}undo-`) ? "undo" : "change", undoneBy: undoneBy.get(p.number) }));
 }
