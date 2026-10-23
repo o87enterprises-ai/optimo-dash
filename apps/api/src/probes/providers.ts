@@ -204,12 +204,25 @@ async function postJson(
 
 /* ---------- Adapters ---------- */
 
-export async function ask(p: Provider, model: string, prompt: string): Promise<Answer> {
+export interface AskOptions {
+  /** instructions kept separate from the user prompt */
+  system?: string;
+  /** Gemini only: override Google Search grounding (default: the GEMINI_GROUNDING setting) */
+  grounded?: boolean;
+  temperature?: number;
+  maxTokens?: number;
+}
+
+export async function ask(p: Provider, model: string, prompt: string, opts: AskOptions = {}): Promise<Answer> {
   const timeout = p.local ? 180_000 : 60_000;
 
   if (p.kind === "gemini") {
     const body: any = { contents: [{ role: "user", parts: [{ text: prompt }] }] };
-    const grounded = groundingOn();
+    if (opts.system) body.systemInstruction = { parts: [{ text: opts.system }] };
+    if (opts.temperature !== undefined || opts.maxTokens !== undefined) {
+      body.generationConfig = { temperature: opts.temperature, maxOutputTokens: opts.maxTokens };
+    }
+    const grounded = opts.grounded ?? groundingOn();
     if (grounded) body.tools = [{ google_search: {} }];
     const data = await postJson(
       `${p.baseUrl}/models/${model}:generateContent`,
@@ -230,7 +243,12 @@ export async function ask(p: Provider, model: string, prompt: string): Promise<A
   const data = await postJson(
     `${p.baseUrl}/chat/completions`,
     headers,
-    { model, messages: [{ role: "user", content: prompt }], temperature: 0.2, max_tokens: 700 },
+    {
+      model,
+      messages: [...(opts.system ? [{ role: "system", content: opts.system }] : []), { role: "user", content: prompt }],
+      temperature: opts.temperature ?? 0.2,
+      max_tokens: opts.maxTokens ?? 700,
+    },
     timeout
   );
   return { text: data.choices?.[0]?.message?.content ?? "", sources: null };
