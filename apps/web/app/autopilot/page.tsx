@@ -385,8 +385,8 @@ export default function Autopilot() {
                   <div>#{it.number} · {it.title}</div>
                   <div className="meta">
                     {new Date(it.createdAt).toLocaleString()} ·{" "}
-                    <span style={pill(it.merged ? "var(--ok)" : it.state === "open" ? "var(--warn)" : "var(--muted)")}>
-                      {it.merged ? "live" : it.state === "open" ? "waiting for approval" : "discarded"}
+                    <span style={pill(it.undoneBy ? "var(--muted)" : it.merged ? "var(--ok)" : it.state === "open" ? "var(--warn)" : "var(--muted)")}>
+                      {it.undoneBy ? `undone by #${it.undoneBy}` : it.merged ? "live" : it.state === "open" ? "waiting for approval" : "discarded"}
                     </span>
                   </div>
                 </div>
@@ -397,7 +397,7 @@ export default function Autopilot() {
                       <button style={btn(false, !!busy)} disabled={!!busy} onClick={() => act("discard", it.number)}>Discard</button>
                     </>
                   )}
-                  {it.merged && it.kind === "change" && (
+                  {it.merged && it.kind === "change" && !it.undoneBy && (
                     <button style={btn(false, !!busy)} disabled={!!busy} onClick={() => act("undo", it.number)}>{busy === `undo-${it.number}` ? "Working…" : "Undo"}</button>
                   )}
                   {mode === "github" && <a href={it.url} target="_blank" rel="noreferrer" style={btn()}>View on GitHub</a>}

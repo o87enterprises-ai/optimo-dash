@@ -66,6 +66,7 @@ test("flow: propose -> publish -> undo restores the original files byte for byte
   }
   const h = await history(repo);
   assert.deepEqual(h.map((x) => x.kind), ["undo", "change"]);
+  assert.deepEqual(h.map((x) => x.undoneBy), [undefined, u.pr.number], "the undone change points at its undo");
 });
 
 test("guardrails: change cap, discard, and undo only after merge", async () => {
