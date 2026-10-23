@@ -93,7 +93,8 @@ export async function readyProviders(req: Request): Promise<Ready[]> {
     const status = await resolveProvider(provider);
     if (status.enabled) out.push({ provider, model: status.model!, status });
   }
-  return out;
+  // hosted providers answer fastest, so local models are the last resort
+  return [...out.filter((r) => !r.provider.local), ...out.filter((r) => r.provider.local)];
 }
 
 /** What to try, in order: just the requested provider, or every ready one so a failing one can be skipped. */

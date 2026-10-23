@@ -2,12 +2,10 @@
 // server routes see the same AI provider keys. Real environment variables win over the file.
 const fs = require("fs");
 const path = require("path");
+const { parseEnv } = require("./lib/env-file");
 try {
-  for (const line of fs.readFileSync(path.resolve(__dirname, "../../.env"), "utf8").split(/\r?\n/)) {
-    const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
-    if (!m || line.trim().startsWith("#") || m[1] in process.env) continue;
-    process.env[m[1]] = m[2].replace(/^(["'])(.*)\1$/, "$2").replace(/\s+#.*$/, "");
-  }
+  const vars = parseEnv(fs.readFileSync(path.resolve(__dirname, "../../.env"), "utf8"));
+  for (const [k, v] of Object.entries(vars)) if (!(k in process.env)) process.env[k] = v;
 } catch {
   // no root .env: fine
 }
