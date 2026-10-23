@@ -108,3 +108,18 @@ test("github connector: friendly errors and no writes without a token", async ()
   const missing = new GitHubRepo("o", "r", "tok", async () => new Response("{}", { status: 404 }));
   await assert.rejects(missing.info(), /not found/i);
 });
+
+test("github connector: the default fetch is not called as a method of the repo (browsers reject that)", async () => {
+  const realFetch = globalThis.fetch;
+  let thisSeen: unknown = "not called";
+  globalThis.fetch = function (this: unknown) {
+    thisSeen = this;
+    return Promise.resolve(new Response(JSON.stringify({ default_branch: "main", visibility: "public" }), { status: 200 }));
+  } as any;
+  try {
+    await new GitHubRepo("o", "r").info().catch(() => {});
+    assert.ok(thisSeen === undefined || thisSeen === globalThis, `fetch was called with this=${String(thisSeen)}`);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

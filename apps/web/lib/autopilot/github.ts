@@ -20,7 +20,8 @@ function friendly(status: number, body: any, authed: boolean): string {
 
 
 export class GitHubRepo implements RepoProvider {
-  constructor(private owner: string, private repo: string, private token?: string, private fetchImpl: typeof fetch = fetch) {}
+  constructor(private owner: string, private repo: string, private token?: string, private fetchImpl: typeof fetch = (input, init) => fetch(input, init)) {}
+  // the default is a closure on purpose: browsers throw "Illegal invocation" when window.fetch is called as a method of another object
 
   private async gh<T = any>(path: string, init: RequestInit & { raw?: boolean } = {}): Promise<T> {
     const { raw, ...rest } = init;
