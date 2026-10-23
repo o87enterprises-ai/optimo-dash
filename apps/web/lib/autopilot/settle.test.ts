@@ -54,6 +54,7 @@ test("when nothing answers the original model is kept so the real error shows", 
   const p = { ...m.provider, apiKey: "key-abcdefghijkl" };
   const r = await settle(ready(p), false);
   assert.equal(r.model, "gone");
+  assert.match(r.note!, /none of the \d+ other models tried answered/);
   m.close();
 });
 
