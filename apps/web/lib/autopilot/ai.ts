@@ -7,7 +7,7 @@ export type CopyRequest = {
   wants: ("title" | "description")[];
 };
 
-export type CopyResult = { path: string; title?: string; description?: string; error?: string };
+export type CopyResult = { path: string; title?: string; description?: string; error?: string; provider?: string };
 
 export const COPY_SYSTEM =
   "You write search-result metadata for a web page. Reply with one JSON object and nothing else. " +
@@ -66,10 +66,11 @@ export function checkCopy(r: CopyRequest, raw: string): CopyResult {
 }
 
 /** Fold validated AI copy into proposals. Anything rejected keeps the built-in rules copy. */
-export function mergeAiCopy(proposals: PageProposal[], results: CopyResult[], providerId: string): PageProposal[] {
+export function mergeAiCopy(proposals: PageProposal[], results: CopyResult[], fallbackProvider = "ai"): PageProposal[] {
   return proposals.map((p) => {
     const res = results.find((r) => r.path === p.path);
     if (!res) return p;
+    const providerId = res.provider ?? fallbackProvider;
     let title = p.finalTitle;
     let titleAi = false;
     let descAi = false;

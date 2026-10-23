@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { checkCopy, copyRequests, mergeAiCopy, parseCopyJson } from "./ai";
+import { briefError, copyWithFallback } from "./fallback";
 import { discard, history, propose, publish, scan, undo } from "./engine";
 import { onlyHeadChanged, readPage, setMeta, setTitle } from "./html";
 import { DEMO_FILES, MemoryRepo } from "./memory";
@@ -129,4 +130,43 @@ test("ai: accepted copy replaces rules copy and flows into the social tags", asy
   assert.equal(p.edits.find((e) => e.field === "og:title")!.after, "Dental Services in Springfield | Brightside Dental");
   const html = applyEdits(DEMO_FILES["services.html"], p.edits);
   assert.equal(readPage(html).title, "Dental Services in Springfield | Brightside Dental");
+});
+
+test("fallback: a failing provider is skipped and the next one finishes the run", async () => {
+  const pages = ["a.html", "b.html"].map((path) => ({
+    path, siteName: "Brightside Dental", wants: ["title" as const],
+    context: { h1: "Our Dental Services", excerpt: "We offer check-ups.", title: null, description: null },
+  }));
+  const calls: string[] = [];
+  const { results, failures } = await copyWithFallback(["nvidia", "gemini"], pages, async (id) => {
+    calls.push(id);
+    if (id === "nvidia") throw new Error('HTTP 410: {"detail":"The model has reached its end of life"}');
+    return '{"title":"Our Dental Services | Brightside Dental"}';
+  });
+  assert.deepEqual(calls, ["nvidia", "gemini", "gemini"], "a failed provider is not retried on later pages");
+  assert.deepEqual(results.map((r) => r.provider), ["gemini", "gemini"]);
+  assert.equal(failures.length, 1);
+  assert.match(failures[0].error, /end of life.*List models/);
+});
+
+test("fallback: when every provider fails, pages report the error and keep built-in copy", async () => {
+  const pages = [{ path: "a.html", siteName: null, wants: ["title" as const], context: { h1: null, excerpt: null, title: null, description: null } }];
+  const { results } = await copyWithFallback(["x"], pages, async () => { throw new Error("HTTP 429: slow down"); });
+  assert.match(results[0].error!, /rate limit/);
+  assert.equal(results[0].title, undefined);
+});
+
+test("fallback: an invalid reply does not count as a provider failure", async () => {
+  const pages = [{ path: "a.html", siteName: null, wants: ["title" as const], context: { h1: "x", excerpt: "y", title: null, description: null } }];
+  const calls: string[] = [];
+  const { results, failures } = await copyWithFallback(["one", "two"], pages, async (id) => { calls.push(id); return "not json"; });
+  assert.deepEqual(calls, ["one"]);
+  assert.equal(failures.length, 0);
+  assert.match(results[0].error!, /JSON/);
+});
+
+test("briefError: unwraps JSON error bodies and hides nothing important", () => {
+  assert.match(briefError('HTTP 401: {"error":{"message":"bad"}}'), /key was rejected/);
+  assert.equal(briefError("fetch failed"), "fetch failed");
+  assert.match(briefError('HTTP 404: {"message":"model not found"}'), /model not found.*List models/);
 });

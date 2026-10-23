@@ -32,7 +32,11 @@ NVIDIA, Groq, Gemini, Ollama (local or cloud), or any OpenAI-compatible endpoint
   tab only and is never stored. The server never accepts a base URL from a request.
 - **Public deployments:** when deployed on Vercel, server-side keys are **not** used unless `AUTOPILOT_ACCESS_KEY` is set;
   visitors then need to enter that code. This stops strangers spending your free-tier keys.
-- Use **Test connection** to verify a key end to end.
+- Leave the provider on **Automatic** and Autopilot tries each ready provider in turn: if one fails (retired model, rejected key,
+  rate limit) it is skipped and the next one finishes the run. The note under the AI panel says which one wrote the copy and why others were skipped.
+- Providers retire models. If one fails with "end of life" or "model not found", choose it in the dropdown, press **List models**,
+  pick a current one in the model box, and (to make it permanent) set `<PROVIDER>_MODEL` in `.env`, for example `NVIDIA_MODEL`.
+- **Test connection** checks every ready provider at once (or just the chosen one) and shows a tick or the reason for each.
 
 Every AI suggestion is validated before use: it must fit the length limits and may not introduce numbers, links or
 emails that are not on the page. Anything rejected falls back to the built-in copy.

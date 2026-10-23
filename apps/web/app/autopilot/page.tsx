@@ -52,6 +52,8 @@ export default function Autopilot() {
   const [useAi, setUseAi] = useState(true);
   const [aiProvider, setAiProvider] = useState("");
   const [aiKey, setAiKey] = useState("");
+  const [aiModel, setAiModel] = useState("");
+  const [models, setModels] = useState<string[]>([]);
   const [access, setAccess] = useState("");
   const [aiNote, setAiNote] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -73,7 +75,7 @@ export default function Autopilot() {
   }
   useEffect(() => { loadAi(); }, [access]);
 
-  const aiBody = () => ({ provider: aiProvider || undefined, apiKey: aiKey || undefined });
+  const aiBody = () => ({ provider: aiProvider || undefined, apiKey: aiKey || undefined, model: (aiProvider && aiModel) || undefined });
   const aiReady = !!ai && (aiKey ? !!aiProvider : ai.providers.some((p) => p.enabled));
 
   async function testAi() {
@@ -82,7 +84,22 @@ export default function Autopilot() {
     const r = await fetch("/api/autopilot/test", { method: "POST", headers: aiHeaders(), body: JSON.stringify(aiBody()) });
     const d = await r.json().catch(() => ({}));
     setBusy("");
-    setAiNote(d.ok ? { ok: true, text: `${d.provider} / ${d.model} answered in ${d.ms} ms` } : { ok: false, text: d.error || `Failed (${r.status})` });
+    if (!d.results) return setAiNote({ ok: false, text: d.error || `Failed (${r.status})` });
+    setAiNote({
+      ok: d.ok,
+      text: d.results.map((x: any) => (x.ok ? `✓ ${x.label} · ${x.model} answered in ${x.ms} ms` : `✗ ${x.label} · ${x.model}: ${x.error}`)).join("\n"),
+    });
+  }
+
+  async function loadModels() {
+    setAiNote(null);
+    setBusy("models");
+    const r = await fetch("/api/autopilot/models", { method: "POST", headers: aiHeaders(), body: JSON.stringify({ provider: aiProvider, apiKey: aiKey || undefined }) });
+    const d = await r.json().catch(() => ({}));
+    setBusy("");
+    if (!d.ok) return setAiNote({ ok: false, text: d.error || `Failed (${r.status})` });
+    setModels(d.models);
+    setAiNote({ ok: true, text: `${d.models.length} models available from ${d.provider}. Pick one in the model box. Default: ${d.current ?? "none"}.` });
   }
 
   function repoFor(): RepoProvider {
@@ -114,13 +131,18 @@ export default function Autopilot() {
       return list;
     }
     const results: CopyResult[] = d.results;
-    const ok = results.filter((x) => !x.error).length;
+    const ok = results.filter((x) => !x.error);
     const bad = results.filter((x) => x.error);
+    const used = [...new Set(ok.map((x) => x.provider))].join(", ");
+    const failed: { provider: string; error: string }[] = d.failures ?? [];
     setAiNote({
       ok: bad.length === 0,
-      text: `${d.provider} / ${d.model} wrote copy for ${ok} of ${results.length} pages.` + (bad.length ? ` Kept built-in copy for: ${bad.map((b) => `${b.path} (${b.error})`).join("; ")}` : ""),
+      text:
+        (ok.length ? `${used} wrote copy for ${ok.length} of ${results.length} pages.` : `No AI copy was written (${results.length} pages kept the built-in copy).`) +
+        failed.map((f) => `\n${f.provider} was skipped: ${f.error}`).join("") +
+        bad.map((b) => `\n${b.path}: ${b.error}`).join(""),
     });
-    return mergeAiCopy(list, results, d.provider);
+    return mergeAiCopy(list, results);
   }
 
   async function doScan() {
@@ -239,7 +261,7 @@ export default function Autopilot() {
             style={{ ...input, flex: "0 0 200px" }} value={aiProvider}
             onChange={(e) => { setAiProvider(e.target.value); store.set("optimo.ai.provider", e.target.value); }}
           >
-            <option value="">Automatic (first ready)</option>
+            <option value="">Automatic (tries each ready one)</option>
             {ai?.providers.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
           </select>
           {BYOK.includes(aiProvider) && (
@@ -254,12 +276,22 @@ export default function Autopilot() {
               value={access} onChange={(e) => { setAccess(e.target.value); store.set("optimo.ai.access", e.target.value); }}
             />
           )}
+          {aiProvider && (
+            <>
+              <input
+                style={input} list="ai-models" placeholder="Model (optional, blank = default)" value={aiModel}
+                onChange={(e) => { setAiModel(e.target.value); store.set("optimo.ai.model", e.target.value); }}
+              />
+              <datalist id="ai-models">{models.map((m) => <option key={m} value={m} />)}</datalist>
+              <button style={btn(false, !!busy)} disabled={!!busy} onClick={loadModels}>{busy === "models" ? "Loading…" : "List models"}</button>
+            </>
+          )}
           <button style={btn(false, !!busy || !aiReady)} disabled={!!busy || !aiReady} onClick={testAi}>{busy === "test" ? "Testing…" : "Test connection"}</button>
         </div>
         {ai && !ai.serverKeys && ai.access === "off" && (
           <div className="meta" style={{ marginTop: 8 }}>This deployment has no shared keys, so paste your own above. They are sent only with your own requests and never stored.</div>
         )}
-        {aiNote && <div className="meta" style={{ marginTop: 8, color: aiNote.ok ? "var(--ok)" : "var(--bad)" }}>{aiNote.text}</div>}
+        {aiNote && <div className="meta" style={{ marginTop: 8, color: aiNote.ok ? "var(--ok)" : "var(--bad)", whiteSpace: "pre-line" }}>{aiNote.text}</div>}
       </div>
 
       {note && (
