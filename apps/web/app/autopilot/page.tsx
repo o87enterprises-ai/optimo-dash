@@ -124,7 +124,13 @@ export default function Autopilot() {
   async function improve(list: PageProposal[], siteName: string | null): Promise<PageProposal[]> {
     const pages = copyRequests(list, siteName);
     if (!pages.length) return list;
-    const r = await fetch("/api/autopilot/rewrite", { method: "POST", headers: aiHeaders(), body: JSON.stringify({ ...aiBody(), pages }) });
+    let r: Response;
+    try {
+      r = await fetch("/api/autopilot/rewrite", { method: "POST", headers: aiHeaders(), body: JSON.stringify({ ...aiBody(), pages }), signal: AbortSignal.timeout(58_000) });
+    } catch {
+      setAiNote({ ok: false, text: "The AI took too long to answer, so the built-in copy is shown. Try again, or pick a faster provider." });
+      return list;
+    }
     const d = await r.json().catch(() => ({}));
     if (!r.ok) {
       setAiNote({ ok: false, text: `AI copy skipped (${d.error || r.status}). Using the built-in copy.` });
@@ -151,11 +157,17 @@ export default function Autopilot() {
       const repo = repoFor();
       const s = await scan(repo);
       let list = s.proposals;
-      if (useAi && aiReady && list.length) list = await improve(list, s.siteName);
+      // show the built-in suggestions and the history straight away; AI copy replaces them when it arrives
       setResult(s);
       setProposals(list);
       setPicked(new Set(list.map((p) => p.path)));
       setLog(await history(repo));
+      if (useAi && aiReady && list.length) {
+        setAiNote({ ok: true, text: "Writing copy with AI… the built-in suggestions below will be replaced when it is done." });
+        list = await improve(list, s.siteName);
+        setProposals(list);
+        setPicked(new Set(list.map((p) => p.path)));
+      }
     });
   }
 
