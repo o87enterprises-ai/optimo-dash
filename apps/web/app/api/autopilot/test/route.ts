@@ -25,7 +25,7 @@ export async function POST(req: Request) {
           ]);
           return { provider: provider.id, label: provider.label, model, ok: true, ms: Date.now() - t0, reply: a.text.trim().slice(0, 80), note };
         } catch (e: any) {
-          return { provider: provider.id, label: provider.label, model, ok: false, ms: Date.now() - t0, error: briefError(String(e.message ?? e)) };
+          return { provider: provider.id, label: provider.label, model, ok: false, ms: Date.now() - t0, error: briefError(String(e.message ?? e)), note };
         }
       })
     );

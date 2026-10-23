@@ -108,7 +108,9 @@ export async function candidates(req: Request, body: { provider?: unknown; apiKe
 
 /* ---------- a default model that is gone (retired, or not enabled for this account) ---------- */
 
-const PROBE_S = 15;
+const PROBE_S = 10;
+const BATCH = 8;
+const BATCHES = 3;
 const SIZE_OK = /(^|[^\d])(7|8|9|12|14|20|24|27|32|49|70)b/i;
 const TOO_BIG = /\b(1\d\d|2\d\d|[3-9]\d\d)b\b|ultra|thinking|reasoning|r1|-r\d/i;
 const settled = new Map<string, { model: string; note?: string; at: number }>();
@@ -145,13 +147,30 @@ export async function settle(r: Ready, named: boolean): Promise<Ready> {
   } catch (e: any) {
     if (!/HTTP (404|410)\b/.test(String(e?.message))) return r;
   }
+  let options: string[];
   try {
-    const options = rankModels(await listModels(r.provider), r.model).slice(0, 8);
-    const found = await Promise.any(options.map(async (m) => (await probe(r.provider, m), m)));
-    return remember(found, `${r.model} is not available for this key, so ${found} is used instead`);
+    options = rankModels(await listModels(r.provider), r.model).slice(0, BATCH * BATCHES);
   } catch {
     return r;
   }
+  const errors: string[] = [];
+  for (let i = 0; i < options.length; i += BATCH) {
+    try {
+      const found = await Promise.any(
+        options.slice(i, i + BATCH).map(async (m) => {
+          try {
+            await probe(r.provider, m);
+            return m;
+          } catch (e: any) {
+            errors.push(String(e?.message ?? e));
+            throw e;
+          }
+        })
+      );
+      return remember(found, `${r.model} is not available for this key, so ${found} is used instead`);
+    } catch {}
+  }
+  return { ...r, note: `${r.model} is not available for this key, and none of the ${options.length} other models tried answered (${briefError(errors[0] ?? "no reason given")})` };
 }
 
 const NOT_CHAT = /embed|rerank|reward|whisper|tts|moderation|guard|image|clip|vision|speech|asr/i;
