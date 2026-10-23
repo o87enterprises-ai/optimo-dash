@@ -14,7 +14,7 @@ export async function POST(req: Request) {
   try {
     const list = await candidates(req, body);
     const results = await Promise.all(
-      list.map(async ({ provider, model }) => {
+      list.map(async ({ provider, model, note }) => {
         const t0 = Date.now();
         try {
           const a = await Promise.race([
@@ -23,7 +23,7 @@ export async function POST(req: Request) {
               setTimeout(() => reject(new Error(`no answer in ${TEST_LIMIT_S} s${provider.local ? " (local models can be slow to load; try again once it is warm)" : ""}`)), TEST_LIMIT_S * 1000)
             ),
           ]);
-          return { provider: provider.id, label: provider.label, model, ok: true, ms: Date.now() - t0, reply: a.text.trim().slice(0, 80) };
+          return { provider: provider.id, label: provider.label, model, ok: true, ms: Date.now() - t0, reply: a.text.trim().slice(0, 80), note };
         } catch (e: any) {
           return { provider: provider.id, label: provider.label, model, ok: false, ms: Date.now() - t0, error: briefError(String(e.message ?? e)) };
         }

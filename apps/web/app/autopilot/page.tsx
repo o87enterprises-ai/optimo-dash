@@ -87,7 +87,7 @@ export default function Autopilot() {
     if (!d.results) return setAiNote({ ok: false, text: d.error || `Failed (${r.status})` });
     setAiNote({
       ok: d.ok,
-      text: d.results.map((x: any) => (x.ok ? `✓ ${x.label} · ${x.model} answered in ${x.ms} ms` : `✗ ${x.label} · ${x.model}: ${x.error}`)).join("\n"),
+      text: d.results.map((x: any) => (x.ok ? `✓ ${x.label} · ${x.model} answered in ${x.ms} ms${x.note ? ` (${x.note})` : ""}` : `✗ ${x.label} · ${x.model}: ${x.error}`)).join("\n"),
     });
   }
 
