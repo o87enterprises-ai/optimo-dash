@@ -40,6 +40,22 @@ config({ path: path.resolve(__dirname, "../../../.env") });
       authority INT,
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
+
+    -- GEO probe results: mentioned = in answer text, cited = in provider-reported sources
+    ALTER TABLE geo_prompts
+      ADD COLUMN IF NOT EXISTS provider TEXT,
+      ADD COLUMN IF NOT EXISTS mentioned BOOLEAN DEFAULT FALSE,
+      ADD COLUMN IF NOT EXISTS excerpt TEXT,
+      ADD COLUMN IF NOT EXISTS sources JSONB;
+
+    -- Prompts a user wants tracked per site
+    CREATE TABLE IF NOT EXISTS site_prompts (
+      id SERIAL PRIMARY KEY,
+      site_id INT REFERENCES sites(id) ON DELETE CASCADE,
+      prompt TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE (site_id, prompt)
+    );
   `);
 
   console.log("Migrations complete.");
