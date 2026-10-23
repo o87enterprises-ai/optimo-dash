@@ -4,7 +4,8 @@ import { useEffect, useState } from "react";
 
 type Health = { ok: boolean; db: boolean; redis: boolean };
 type Site = { id: number; domain: string; name: string; created_at: string };
-type Rank = { keywords: any[]; updated: string };
+type Rank = { keywords: any[]; updated: string | null; totals?: { keywords: number; clicks: number; impressions: number } };
+type Gsc = { configured: boolean; mode?: string; reason?: string };
 type Geo = { prompts: any[]; visibility: number; byProvider?: Record<string, { prompts: number; visibility: number }> };
 type Backlinks = { backlinks: any[] };
 type Provider = { id: string; label: string; model: string | null; enabled: boolean; grounded: boolean; reason?: string };
@@ -27,6 +28,9 @@ export default function Home() {
   const [promptInput, setPromptInput] = useState("");
   const [probing, setProbing] = useState(false);
   const [probeNote, setProbeNote] = useState("");
+  const [gsc, setGsc] = useState<Gsc | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncNote, setSyncNote] = useState<{ ok: boolean; text: string } | null>(null);
 
   async function loadHealth() {
     try {
@@ -56,6 +60,33 @@ export default function Home() {
 
   async function loadProviders() {
     setProviders(await fetch("/api/providers").then((r) => r.json()).catch(() => []));
+  }
+
+  async function loadConnectors() {
+    const c = await fetch("/api/connectors").then((r) => r.json()).catch(() => null);
+    setGsc(c?.gsc ?? null);
+  }
+
+  async function syncSearchConsole() {
+    if (!activeSite) return;
+    setSyncing(true);
+    setSyncNote(null);
+    const res = await fetch(`/api/sites/${activeSite.id}/sync/gsc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    const data = await res.json().catch(() => ({}));
+    setSyncing(false);
+    if (!res.ok) {
+      const avail = data.available?.length ? ` Available properties: ${data.available.join(", ")}` : "";
+      return setSyncNote({ ok: false, text: (data.error || "Sync failed") + avail });
+    }
+    setSyncNote({
+      ok: true,
+      text: `Synced ${data.keywords} queries from ${data.property} (${data.startDate} → ${data.endDate})`,
+    });
+    await loadSiteData(activeSite);
   }
 
   async function loadPrompts(site: Site) {
@@ -123,6 +154,7 @@ export default function Home() {
     loadHealth();
     loadSites();
     loadProviders();
+    loadConnectors();
     const id = setInterval(loadHealth, 5000);
     return () => clearInterval(id);
   }, []);
@@ -219,8 +251,12 @@ export default function Home() {
           <div className="grid">
             <div className="card">
               <h3>SEO · Keywords tracked</h3>
-              <div className="value">{rank?.keywords?.length ?? 0}</div>
-              <div className="meta">Updated {rank?.updated ? new Date(rank.updated).toLocaleString() : "—"}</div>
+              <div className="value">{rank?.totals?.keywords ?? 0}</div>
+              <div className="meta">
+                {rank?.totals?.keywords
+                  ? `${rank.totals.clicks.toLocaleString()} clicks · ${rank.totals.impressions.toLocaleString()} impressions`
+                  : "Sync Search Console below"}
+              </div>
             </div>
             <div className="card">
               <h3>AEO · Snippets / PAA</h3>
@@ -248,6 +284,65 @@ export default function Home() {
               <div className="meta">Connector pending</div>
             </div>
           </div>
+          <div className="section-title">SEO · Google Search Console</div>
+          <div className="card">
+            <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+              <span className="meta">
+                <span className={`dot ${gsc?.configured ? "ok" : "bad"}`} />{" "}
+                {gsc?.configured
+                  ? `Connected (${gsc.mode === "oauth" ? "OAuth" : "service account"})`
+                  : gsc?.reason || "Not connected"}
+                {rank?.updated ? ` · last sync ${new Date(rank.updated).toLocaleString()}` : ""}
+              </span>
+              <button
+                onClick={syncSearchConsole}
+                disabled={syncing || !gsc?.configured}
+                title={gsc?.configured ? "Pull the last 28 days" : gsc?.reason}
+                style={{
+                  padding: "8px 16px", borderRadius: 8, border: "none",
+                  background: "var(--accent)", color: "#001a33", fontWeight: 600,
+                  cursor: syncing ? "wait" : gsc?.configured ? "pointer" : "not-allowed",
+                  opacity: gsc?.configured ? 1 : 0.5,
+                }}
+              >
+                {syncing ? "Syncing…" : "Sync Search Console"}
+              </button>
+            </div>
+            {syncNote && (
+              <div className="meta" style={{ marginTop: 8, color: syncNote.ok ? "var(--ok)" : "var(--bad)" }}>
+                {syncNote.text}
+              </div>
+            )}
+          </div>
+
+          {rank && rank.keywords.length > 0 && (
+            <div className="card" style={{ marginTop: 16, overflowX: "auto" }}>
+              <table style={{ width: "100%", fontSize: 13, borderCollapse: "collapse" }}>
+                <thead>
+                  <tr className="meta" style={{ textAlign: "left" }}>
+                    <th>Query</th><th>Clicks</th><th>Impressions</th><th>CTR</th><th>Avg. position</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rank.keywords.slice(0, 25).map((k) => (
+                    <tr key={k.id} style={{ borderTop: "1px solid var(--border)" }}>
+                      <td style={{ padding: "6px 8px 6px 0" }}>{k.keyword}</td>
+                      <td>{k.clicks ?? 0}</td>
+                      <td>{k.impressions ?? 0}</td>
+                      <td>{k.ctr != null ? `${(k.ctr * 100).toFixed(1)}%` : "—"}</td>
+                      <td>{k.position != null ? Number(k.position).toFixed(1) : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {rank.keywords.length > 25 && (
+                <div className="meta" style={{ marginTop: 8 }}>
+                  Showing top 25 of {rank.totals?.keywords ?? rank.keywords.length} queries
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="section-title">GEO · LLM visibility probes</div>
           <div className="card">
             <div className="row" style={{ flexWrap: "wrap", gap: 8, marginBottom: 12 }}>

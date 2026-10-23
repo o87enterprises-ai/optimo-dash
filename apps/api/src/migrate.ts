@@ -48,6 +48,14 @@ config({ path: path.resolve(__dirname, "../../../.env") });
       ADD COLUMN IF NOT EXISTS excerpt TEXT,
       ADD COLUMN IF NOT EXISTS sources JSONB;
 
+    -- Search Console: average position is fractional (e.g. 7.4); source marks rows a sync owns
+    ALTER TABLE keywords ALTER COLUMN position TYPE REAL;
+    ALTER TABLE keywords
+      ADD COLUMN IF NOT EXISTS impressions INT DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS clicks INT DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS ctr REAL,
+      ADD COLUMN IF NOT EXISTS source TEXT;
+
     -- Prompts a user wants tracked per site
     CREATE TABLE IF NOT EXISTS site_prompts (
       id SERIAL PRIMARY KEY,

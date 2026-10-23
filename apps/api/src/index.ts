@@ -5,6 +5,7 @@ config({ path: path.resolve(__dirname, "../../../.env") });
 import express from "express";
 import Redis from "ioredis";
 import { Pool } from "pg";
+import { GscError, gscStatus, listProperties, syncGsc } from "./connectors/gsc";
 import { NoProviderError, probeLLM } from "./probes/llm";
 import { resolveProviders } from "./probes/providers";
 
@@ -14,11 +15,17 @@ app.use(express.json());
 const pg = new Pool({ connectionString: process.env.DATABASE_URL });
 const redis = new Redis(process.env.REDIS_URL || "redis://localhost:6379");
 
+// An idle connection dropping (e.g. Postgres restarted) must not take the API down; pg reconnects on the next query
+pg.on("error", (e) => console.error("postgres pool error:", e.message));
+
 /* ---------- Health ---------- */
 app.get("/health", async (_req, res) => {
-  const db = await pg.query("SELECT 1");
-  const cache = await redis.ping();
-  res.json({ ok: true, db: db.rowCount === 1, redis: cache === "PONG" });
+  // ok = the API itself is up; db/redis report their own state so the UI can show an outage
+  const [db, cache] = await Promise.all([
+    pg.query("SELECT 1").then((r) => r.rowCount === 1, () => false),
+    redis.ping().then((r) => r === "PONG", () => false),
+  ]);
+  res.json({ ok: true, db, redis: cache });
 });
 
 /* ---------- Sites ---------- */
@@ -53,10 +60,23 @@ app.delete("/api/sites/:id", async (req, res) => {
 /* ---------- Per-site data (stubs for now) ---------- */
 app.get("/api/sites/:id/rank", async (req, res) => {
   const { rows } = await pg.query(
-    "SELECT * FROM keywords WHERE site_id = $1 ORDER BY position NULLS LAST LIMIT 100",
+    `SELECT * FROM keywords WHERE site_id = $1
+     ORDER BY clicks DESC NULLS LAST, impressions DESC NULLS LAST, position NULLS LAST LIMIT 100`,
     [req.params.id]
   );
-  res.json({ keywords: rows, updated: new Date().toISOString() });
+  const t = (
+    await pg.query(
+      `SELECT COUNT(*)::int AS keywords, COALESCE(SUM(clicks),0)::int AS clicks,
+              COALESCE(SUM(impressions),0)::int AS impressions, MAX(updated_at) AS updated
+       FROM keywords WHERE site_id = $1`,
+      [req.params.id]
+    )
+  ).rows[0];
+  res.json({
+    keywords: rows,
+    totals: { keywords: t.keywords, clicks: t.clicks, impressions: t.impressions },
+    updated: t.updated ?? null,
+  });
 });
 
 app.get("/api/sites/:id/geo", async (req, res) => {
@@ -92,6 +112,7 @@ const wrap =
   (req, res) =>
     fn(req, res).catch((e) => {
       if (e instanceof NoProviderError) return res.status(409).json({ error: e.message });
+      if (e instanceof GscError) return res.status(e.httpStatus).json({ error: e.message, ...e.extra });
       res.status(500).json({ error: e.message });
     });
 
@@ -164,6 +185,22 @@ app.get("/api/sites/:id/prompt-suggestions", wrap(async (req, res) => {
     `${brand} reviews: is it worth it?`,
     `Who are the main competitors of ${brand}?`,
   ]);
+}));
+
+/* ---------- Search Console ---------- */
+app.get("/api/connectors", wrap(async (_req, res) => {
+  res.json({ gsc: gscStatus() });
+}));
+
+app.get("/api/gsc/properties", wrap(async (_req, res) => {
+  res.json(await listProperties());
+}));
+
+// Pull the last N days (default 28) of query-level clicks/impressions/position. body: { days?, property? }
+app.post("/api/sites/:id/sync/gsc", wrap(async (req, res) => {
+  const days = req.body?.days === undefined ? undefined : Number(req.body.days);
+  if (days !== undefined && !Number.isFinite(days)) return res.status(400).json({ error: "days must be a number" });
+  res.json(await syncGsc(pg, { siteId: Number(req.params.id), days, property: req.body?.property }));
 }));
 
 /* ---------- Legacy global ---------- */
