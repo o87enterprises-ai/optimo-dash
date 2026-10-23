@@ -23,6 +23,7 @@ Built to run **entirely on Termux (Android)** with no cloud dependency, then dep
 | **Comparison** | Overlay your site against global benchmarks, top performers, or a specific competitor. |
 | **World Map** | Regional SEO/AEO/GEO intel with choropleth, bubbles, and flow arcs. |
 | **Clone Engine** | Reverse-engineer a public competitor's content/schema/backlink strategy using only free data. |
+| **Autopilot** | Finds weak titles/descriptions on a GitHub-hosted static site, writes better ones (built-in rules or any AI provider), and proposes them as a pull request you publish and can undo. See [docs/autopilot.md](./docs/autopilot.md). |
 | **Debrief** | Turn raw findings into prompt-engineering-grade prompts you can hand to an agency or paste into ChatGPT/Claude. |
 
 ---

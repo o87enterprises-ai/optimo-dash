@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 
 type Health = { ok: boolean; db: boolean; redis: boolean };
@@ -177,6 +178,7 @@ export default function Home() {
           </div>
         </div>
         <div className="row">
+          <Link href="/autopilot" className="status">Autopilot →</Link>
           <span className="status"><span className={`dot ${health?.ok ? "ok" : "bad"}`} />API</span>
           <span className="status"><span className={`dot ${health?.db ? "ok" : "bad"}`} />DB</span>
           <span className="status"><span className={`dot ${health?.redis ? "ok" : "bad"}`} />Redis</span>
