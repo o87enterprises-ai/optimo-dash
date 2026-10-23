@@ -1,7 +1,8 @@
 import { ask } from "@llm/providers";
-import { buildCopyPrompt, checkCopy, COPY_SYSTEM, CopyRequest, CopyResult } from "../../../../lib/autopilot/ai";
+import { buildCopyPrompt, COPY_SYSTEM, CopyRequest } from "../../../../lib/autopilot/ai";
+import { copyWithFallback } from "../../../../lib/autopilot/fallback";
 import { LIMITS } from "../../../../lib/autopilot/rules";
-import { AiError, selectProvider } from "../../../../lib/autopilot/server";
+import { AiError, candidates } from "../../../../lib/autopilot/server";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -25,8 +26,9 @@ function clean(raw: any): CopyRequest | null {
   };
 }
 
-// Drafts search-result copy with whichever AI provider is available. Output is validated before it is returned;
-// anything rejected comes back as an error so the caller keeps the built-in copy.
+// Drafts search-result copy with the chosen AI provider, or the first ready one that works (a failing provider is
+// skipped). Output is validated before it is returned; anything rejected comes back as an error so the caller keeps
+// the built-in copy.
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
   const pages = (Array.isArray(body.pages) ? body.pages : []).map(clean).filter(Boolean) as CopyRequest[];
@@ -35,17 +37,19 @@ export async function POST(req: Request) {
     return Response.json({ error: `At most ${LIMITS.maxPagesPerRun} pages per run.` }, { status: 422 });
   }
   try {
-    const { provider, model } = await selectProvider(req, body);
-    const results: CopyResult[] = [];
-    for (const page of pages) {
-      try {
+    const list = await candidates(req, body);
+    const byId = new Map(list.map((c) => [c.provider.id, c]));
+    const { results, failures } = await copyWithFallback(
+      list.map((c) => c.provider.id),
+      pages,
+      async (id, page) => {
+        const { provider, model } = byId.get(id)!;
         const a = await ask(provider, model, buildCopyPrompt(page), { system: COPY_SYSTEM, grounded: false, temperature: 0.3, maxTokens: 400 });
-        results.push(checkCopy(page, a.text));
-      } catch (e: any) {
-        results.push({ path: page.path, error: String(e.message ?? e).slice(0, 200) });
+        return a.text;
       }
-    }
-    return Response.json({ provider: provider.id, model, results });
+    );
+    const models = Object.fromEntries(list.map((c) => [c.provider.id, c.model]));
+    return Response.json({ results, failures, models });
   } catch (e: any) {
     const status = e instanceof AiError ? e.status : 502;
     return Response.json({ error: String(e.message ?? e).slice(0, 300) }, { status });
