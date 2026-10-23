@@ -58,7 +58,7 @@ export function listProviders(env: Env = process.env): Provider[] {
       kind: "openai",
       baseUrl: trimSlash(env.NVIDIA_BASE_URL || "https://integrate.api.nvidia.com/v1"),
       apiKey: env.NVIDIA_API_KEY,
-      model: env.NVIDIA_MODEL || "meta/llama-3.1-8b-instruct",
+      model: env.NVIDIA_MODEL || "google/gemma-3-12b-it", // NVIDIA retires models; List models in the UI shows current ones
       keyRequired: true,
     },
     {
@@ -240,16 +240,20 @@ export async function ask(p: Provider, model: string, prompt: string, opts: AskO
   }
 
   const headers: Record<string, string> = p.apiKey ? { Authorization: `Bearer ${p.apiKey}` } : {};
-  const data = await postJson(
-    `${p.baseUrl}/chat/completions`,
-    headers,
-    {
-      model,
-      messages: [...(opts.system ? [{ role: "system", content: opts.system }] : []), { role: "user", content: prompt }],
-      temperature: opts.temperature ?? 0.2,
-      max_tokens: opts.maxTokens ?? 700,
-    },
-    timeout
-  );
+  const chat = (messages: { role: string; content: string }[]) =>
+    postJson(
+      `${p.baseUrl}/chat/completions`,
+      headers,
+      { model, messages, temperature: opts.temperature ?? 0.2, max_tokens: opts.maxTokens ?? 700 },
+      timeout
+    );
+  let data: any;
+  try {
+    data = await chat([...(opts.system ? [{ role: "system", content: opts.system }] : []), { role: "user", content: prompt }]);
+  } catch (e) {
+    // some models (e.g. Gemma) reject a system role: retry once with the instructions folded into the user message
+    if (!(opts.system && e instanceof HttpError && e.status === 400)) throw e;
+    data = await chat([{ role: "user", content: `${opts.system}\n\n${prompt}` }]);
+  }
   return { text: data.choices?.[0]?.message?.content ?? "", sources: null };
 }
