@@ -34,16 +34,21 @@ export function buildCopyPrompt(r: CopyRequest): string {
 /** Pull the first JSON object out of a model reply, tolerating code fences and chatter. */
 export function parseCopyJson(text: string): Record<string, unknown> | null {
   // reasoning models put their working in <think> blocks (sometimes never closed when the reply is cut off)
-  const cleaned = text.replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, "").replace(/<think(?:ing)?>[\s\S]*$/i, "").replace(/```(?:json)?/gi, "");
-  const start = cleaned.indexOf("{");
-  const end = cleaned.lastIndexOf("}");
-  if (start < 0 || end <= start) return null;
-  try {
-    const v = JSON.parse(cleaned.slice(start, end + 1));
-    return v && typeof v === "object" ? v : null;
-  } catch {
-    return null;
+  const cleaned = text
+    .replace(/<(think|thinking|reasoning)>[\s\S]*?<\/\1>/gi, "")
+    .replace(/<(?:think|thinking|reasoning)>[\s\S]*$/i, "")
+    .replace(/```(?:json)?/gi, "");
+  // stray braces in chatter ("Format: {title}") must not hide the real object: try spans ending at the last "}" first
+  let tries = 0;
+  for (let end = cleaned.lastIndexOf("}"); end > 0 && tries < 200; end = cleaned.lastIndexOf("}", end - 1)) {
+    for (let start = cleaned.lastIndexOf("{", end); start >= 0 && tries < 200; start = cleaned.lastIndexOf("{", start - 1), tries++) {
+      try {
+        const v = JSON.parse(cleaned.slice(start, end + 1));
+        if (v && typeof v === "object" && !Array.isArray(v)) return v;
+      } catch {}
+    }
   }
+  return null;
 }
 
 /** Source text an AI suggestion is allowed to draw facts from. */
