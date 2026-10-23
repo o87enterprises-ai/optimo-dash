@@ -31,7 +31,7 @@ function detectFramework(pkg: string | null, paths: string[]): string | null {
   }
   if (paths.includes("_config.yml")) return "Jekyll";
   if (paths.some((p) => /^(hugo|config)\.(toml|ya?ml|json)$/.test(p))) return "Hugo";
-  return pkg ? "a Node project" : null;
+  return pkg ? "Node.js" : null;
 }
 
 function siteNameFrom(index: string | null, repoName: string): string {

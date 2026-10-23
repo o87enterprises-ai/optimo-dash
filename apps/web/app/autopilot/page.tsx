@@ -305,8 +305,10 @@ export default function Autopilot() {
           <div className="section-title">2 · Review proposed changes</div>
           {result.framework ? (
             <div className="card">
-              No static HTML pages were found. This looks like a <b>{result.framework}</b> project, where page titles live in the source code.
-              Autopilot edits static HTML sites today; framework support is planned.
+              No static HTML pages were found.{" "}
+              {result.framework === "unknown" ? "This does not look like a static site" : <>This looks like a <b>{result.framework}</b> project</>}
+              , where page titles live in the source code. Autopilot edits static HTML sites today; framework support is planned.
+              Check that the repository name is the one that holds your site.
             </div>
           ) : (
             <>
