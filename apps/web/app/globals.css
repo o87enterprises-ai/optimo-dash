@@ -1,30 +1,67 @@
-:root {
-  --bg: #0b0f17;
-  --panel: #131a26;
-  --border: #223047;
-  --text: #e6eefc;
-  --muted: #8ba1c2;
-  --accent: #4ea1ff;
-  --ok: #35d07f;
-  --warn: #ffb454;
-  --bad: #ff5f6d;
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* 0ptimo Prim3 Brand Tokens */
+    --background: 222 43% 6%;     /* Deep Obsidian Navy #0A0E1A */
+    --foreground: 214 100% 97%;   /* Cool White #F0F4FF */
+    
+    --panel: 221 26% 15%;         /* Gunmetal #1C2230 */
+    --panel-border: 221 26% 25%;  /* Lighter Gunmetal for HUD borders */
+    
+    --primary: 186 100% 50%;      /* Electric Cyan #00E5FF */
+    --primary-foreground: 222 43% 6%;
+    
+    --accent: 32 100% 50%;        /* Transformer Amber #FF8A00 */
+    --accent-foreground: 222 43% 6%;
+
+    --success: 157 77% 54%;       /* Signal Green #2EE6A8 */
+    --warning: 32 100% 50%;       /* Amber #FF8A00 */
+    --destructive: 0 100% 62%;    /* Magma Red #FF3B3B */
+  }
 }
-* { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-a { color: var(--accent); text-decoration: none; }
-.container { max-width: 1280px; margin: 0 auto; padding: 24px; }
-.header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
-.title { font-size: 22px; font-weight: 600; letter-spacing: 0.3px; }
-.subtitle { color: var(--muted); font-size: 13px; margin-top: 4px; }
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
-.card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
-.card h3 { margin: 0 0 8px; font-size: 14px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; }
-.card .value { font-size: 28px; font-weight: 700; }
-.card .meta { color: var(--muted); font-size: 12px; margin-top: 6px; }
-.status { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 999px; font-size: 12px; }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
-.dot.ok { background: var(--ok); }
-.dot.bad { background: var(--bad); }
-.row { display: flex; gap: 12px; align-items: center; }
-.section-title { margin: 32px 0 12px; font-size: 16px; font-weight: 600; }
-.footer { margin-top: 40px; color: var(--muted); font-size: 12px; text-align: center; }
+
+body {
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+  /* Force tabular numbers for a HUD terminal feel on data elements */
+  font-feature-settings: "tnum" on, "lnum" on, "ss01" on;
+  overflow: hidden; /* Prevents body scroll, we will scroll inside panels */
+}
+
+/* Custom Scrollbar for HUD Panels */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--panel-border));
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--primary) / 0.5);
+}
+
+/* HUD Utility Classes */
+.hud-panel {
+  background-color: hsl(var(--panel) / 0.8);
+  border: 1px solid hsl(var(--panel-border));
+  backdrop-filter: blur(8px);
+  border-radius: 0.5rem;
+}
+
+.hud-text-glow {
+  text-shadow: 0 0 10px hsl(var(--primary) / 0.5);
+}
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.animate-spin-slow {
+  animation: spin-slow 8s linear infinite;
+}
