@@ -182,6 +182,7 @@ export interface GscSyncResult {
   startDate: string;
   endDate: string;
   keywords: number;
+  countries: number;
   clicks: number;
   impressions: number;
 }
@@ -212,6 +213,7 @@ export async function syncGsc(
   const end = new Date(Date.now() - 2 * 86_400_000);
   const start = new Date(end.getTime() - (days - 1) * 86_400_000);
 
+  // 1. Fetch keyword data
   const data = await gsc(`/sites/${encodeURIComponent(property.siteUrl)}/searchAnalytics/query`, {
     method: "POST",
     body: {
@@ -224,10 +226,25 @@ export async function syncGsc(
   });
   const rows: { keys: string[]; clicks: number; impressions: number; ctr: number; position: number }[] = data.rows ?? [];
 
-  // Replace this site's Search Console keywords as one unit: the window is the source of truth
+  // 2. Fetch regional data (by country)
+  const countryData = await gsc(`/sites/${encodeURIComponent(property.siteUrl)}/searchAnalytics/query`, {
+    method: "POST",
+    body: {
+      startDate: isoDay(start),
+      endDate: isoDay(end),
+      dimensions: ["country"],
+      type: "web",
+      rowLimit: 5000,
+    },
+  });
+  const countryRows: { keys: string[]; clicks: number; impressions: number; ctr: number; position: number }[] = countryData.rows ?? [];
+
+  // Replace this site's Search Console data as one unit: the window is the source of truth
   const client = await pg.connect();
   try {
     await client.query("BEGIN");
+    
+    // Clear old keywords
     await client.query("DELETE FROM keywords WHERE site_id = $1 AND source = 'gsc'", [opts.siteId]);
     if (rows.length) {
       await client.query(
@@ -244,6 +261,25 @@ export async function syncGsc(
         ]
       );
     }
+
+    // Clear old regional metrics
+    await client.query("DELETE FROM regional_metrics WHERE site_id = $1", [opts.siteId]);
+    if (countryRows.length) {
+      await client.query(
+        `INSERT INTO regional_metrics (site_id, country, clicks, impressions, ctr, position)
+         SELECT $1, c, cl, imp, t, p
+         FROM unnest($2::text[], $3::int[], $4::int[], $5::real[], $6::real[]) AS x(c, cl, imp, t, p)`,
+        [
+          opts.siteId,
+          countryRows.map((r) => r.keys[0]),
+          countryRows.map((r) => r.clicks),
+          countryRows.map((r) => r.impressions),
+          countryRows.map((r) => r.ctr),
+          countryRows.map((r) => r.position),
+        ]
+      );
+    }
+
     await client.query("COMMIT");
   } catch (e) {
     await client.query("ROLLBACK");
@@ -257,6 +293,7 @@ export async function syncGsc(
     startDate: isoDay(start),
     endDate: isoDay(end),
     keywords: rows.length,
+    countries: countryRows.length,
     clicks: rows.reduce((a, r) => a + r.clicks, 0),
     impressions: rows.reduce((a, r) => a + r.impressions, 0),
   };

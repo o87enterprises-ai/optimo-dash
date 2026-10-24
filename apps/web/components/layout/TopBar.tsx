@@ -1,10 +1,12 @@
+const TARGET_DOMAIN = process.env.NEXT_PUBLIC_TARGET_DOMAIN ?? "truegle.info";
+
 export function TopBar() {
   return (
     <header className="h-16 border-b border-panel-border bg-panel/20 flex items-center justify-between px-6 backdrop-blur-md">
       <div className="flex items-center gap-6">
         <div className="flex flex-col">
           <span className="text-xs font-mono text-foreground/50 uppercase tracking-widest">Target Domain</span>
-          <span className="font-mono text-sm text-foreground">optimo-dash.vercel.app</span>
+          <span className="font-mono text-sm text-foreground">{TARGET_DOMAIN}</span>
         </div>
         <div className="h-8 w-px bg-panel-border hidden sm:block" />
         <div className="hidden sm:flex flex-col">

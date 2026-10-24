@@ -3,6 +3,7 @@ import { config } from "dotenv";
 config({ path: path.resolve(__dirname, "../../../.env") });
 
 import express from "express";
+import cors from "cors"; // <-- NEW: Import CORS
 import Redis from "ioredis";
 import { Pool } from "pg";
 import { GscError, gscStatus, listProperties, syncGsc } from "./connectors/gsc";
@@ -10,6 +11,7 @@ import { NoProviderError, probeLLM } from "./probes/llm";
 import { resolveProviders } from "./probes/providers";
 
 const app = express();
+app.use(cors()); // <-- NEW: Enable CORS for all routes
 app.use(express.json());
 
 const pg = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -57,7 +59,7 @@ app.delete("/api/sites/:id", async (req, res) => {
   res.status(204).end();
 });
 
-/* ---------- Per-site data (stubs for now) ---------- */
+/* ---------- Per-site data ---------- */
 app.get("/api/sites/:id/rank", async (req, res) => {
   const { rows } = await pg.query(
     `SELECT * FROM keywords WHERE site_id = $1
@@ -77,6 +79,18 @@ app.get("/api/sites/:id/rank", async (req, res) => {
     totals: { keywords: t.keywords, clicks: t.clicks, impressions: t.impressions },
     updated: t.updated ?? null,
   });
+});
+
+// NEW: Regional Metrics for the 3D Globe
+app.get("/api/sites/:id/regional_metrics", async (req, res) => {
+  const { rows } = await pg.query(
+    `SELECT country, clicks, impressions, ctr, position 
+     FROM regional_metrics 
+     WHERE site_id = $1 
+     ORDER BY clicks DESC LIMIT 100`,
+    [req.params.id]
+  );
+  res.json(rows);
 });
 
 app.get("/api/sites/:id/geo", async (req, res) => {

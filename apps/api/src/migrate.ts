@@ -41,6 +41,19 @@ config({ path: path.resolve(__dirname, "../../../.env") });
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
 
+    -- NEW: Regional metrics table for the 3D Globe
+    CREATE TABLE IF NOT EXISTS regional_metrics (
+      id SERIAL PRIMARY KEY,
+      site_id INT REFERENCES sites(id) ON DELETE CASCADE,
+      country TEXT NOT NULL,
+      clicks INT DEFAULT 0,
+      impressions INT DEFAULT 0,
+      ctr REAL,
+      position REAL,
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE (site_id, country)
+    );
+
     -- GEO probe results: mentioned = in answer text, cited = in provider-reported sources
     ALTER TABLE geo_prompts
       ADD COLUMN IF NOT EXISTS provider TEXT,
